@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { maskCredential, resolveVaultPath, VaultStore } from '../src/store/vault.ts'
+import { maskCredential, resolveVaultPath, VaultError, VaultStore } from '../src/store/vault.ts'
 
 function tmpHome(): string {
   return mkdtempSync(join(tmpdir(), 'vgen-vault-'))
@@ -94,6 +94,77 @@ test('parse 失败先备份 .broken-* 再回退，且保存后可恢复读写', 
     assert.equal(leftovers.length, 1)
     store.save(store.load())
     assert.deepEqual(store.load().channels, [])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+const GOOD = { id: 'vectorengine', baseUrl: 'https://api.vectorengine.ai/v1', apiKey: 'sk-vgen-1234567890' }
+
+test('createChannel 正常路径：落库、返回脱敏、明文不泄露', () => {
+  const home = tmpHome()
+  try {
+    const store = VaultStore.open({ file: join(home, 'vault.json') })
+    const masked = store.createChannel({ ...GOOD, label: '向量引擎' })
+    assert.equal(masked.id, 'vectorengine')
+    assert.equal(masked.apiKeyMasked, 'sk-••••890')
+    assert.ok(!('apiKey' in masked))
+    assert.ok(!JSON.stringify(masked).includes('sk-vgen-1234567890'))
+    const full = store.getChannel('vectorengine')
+    assert.equal(full?.apiKey, GOOD.apiKey)
+    assert.equal(full?.enabled, true)
+    assert.equal(full?.kind, 'openai-compat')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('createChannel 校验：非法 id/http baseUrl/短 key/重复 id', () => {
+  const home = tmpHome()
+  try {
+    const store = VaultStore.open({ file: join(home, 'vault.json') })
+    store.createChannel({ ...GOOD })
+    assert.throws(() => store.createChannel({ ...GOOD, id: 'Bad Id' }), VaultError)
+    assert.throws(() => store.createChannel({ ...GOOD, id: 'insecure', baseUrl: 'http://x.example' }), VaultError)
+    assert.throws(() => store.createChannel({ ...GOOD, id: 'short', apiKey: 'sk-1' }), VaultError)
+    // 重复 id 须为 conflict 类错误（断言 code 而非 message 文案）
+    assert.throws(
+      () => store.createChannel({ ...GOOD }),
+      (err: unknown) => err instanceof VaultError && err.code === 'conflict',
+    )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('updateChannel 只改提供的字段且永不明文回显；delete 生效', () => {
+  const home = tmpHome()
+  try {
+    const store = VaultStore.open({ file: join(home, 'vault.json') })
+    store.createChannel({ ...GOOD })
+    const updated = store.updateChannel('vectorengine', { label: 'VE', enabled: false, baseUrl: 'https://api.vectorengine.cn/v1' })
+    assert.equal(updated.label, 'VE')
+    assert.equal(updated.enabled, false)
+    assert.equal(updated.baseUrl, 'https://api.vectorengine.cn/v1')
+    assert.ok(!JSON.stringify(updated).includes('sk-vgen-1234567890'))
+    store.deleteChannel('vectorengine')
+    assert.equal(store.getChannel('vectorengine'), null)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('setDefaultChannel + 预算阈值读写 + 跨实例持久化', () => {
+  const home = tmpHome()
+  const file = join(home, 'vault.json')
+  try {
+    const store = VaultStore.open({ file })
+    store.createChannel({ ...GOOD })
+    store.setDefaultChannel('vectorengine')
+    store.setBudget(5)
+    const again = VaultStore.open({ file })
+    assert.equal(again.load().defaultChannelId, 'vectorengine')
+    assert.equal(again.getBudget().confirmThresholdCny, 5)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

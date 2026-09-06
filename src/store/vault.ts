@@ -55,6 +55,30 @@ export function maskCredential(s: string): string {
   return `${s.slice(0, 3)}••••${s.slice(-3)}`
 }
 
+/** 显式声明字段 + 构造器体内赋值（Node strip-only 禁参数属性）。 */
+export class VaultError extends Error {
+  readonly code: 'bad-request' | 'not-found' | 'conflict'
+
+  constructor(code: 'bad-request' | 'not-found' | 'conflict', message: string) {
+    super(message)
+    this.code = code
+  }
+}
+
+export type MaskedChannel = Omit<ChannelConfig, 'apiKey'> & { apiKeyMasked: string }
+
+const ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/
+const MAX_CHANNELS = 20
+
+export interface ChannelInput {
+  id: string
+  baseUrl: string
+  apiKey: string
+  label?: string
+  models?: ChannelModel[]
+  enabled?: boolean
+}
+
 /** 解析成功后的逐字段形状守卫：损坏但合法的 JSON 不带类型谎言入库。 */
 function sanitize(parsed: unknown): VaultData {
   const d = defaultVaultData()
@@ -73,6 +97,7 @@ function sanitize(parsed: unknown): VaultData {
 /** 显式声明字段 + 构造器体内赋值（Node strip-only 禁参数属性）。 */
 export class VaultStore {
   readonly file: string
+  private data: VaultData | null = null
 
   constructor(file: string) {
     this.file = file
@@ -116,4 +141,143 @@ export class VaultStore {
     renameSync(tmp, this.file)
     chmodSync(this.file, 0o600)
   }
+
+  private mutate<T>(fn: (d: VaultData) => T): T {
+    const d = this.data ?? this.load()
+    this.data = d
+    const out = fn(d)
+    this.save(d)
+    return out
+  }
+
+  listChannels(): MaskedChannel[] {
+    return this.load().channels.map((c) => masked(c))
+  }
+
+  getChannel(id: string): ChannelConfig | null {
+    return this.load().channels.find((c) => c.id === id) ?? null
+  }
+
+  createChannel(input: ChannelInput): MaskedChannel {
+    const id = String(input.id ?? '')
+    if (!ID_RE.test(id)) throw new VaultError('bad-request', `非法通道 id: ${id}`)
+    const baseUrl = validateBaseUrl(input.baseUrl)
+    const apiKey = String(input.apiKey ?? '').trim()
+    if (apiKey.length < 8 || apiKey.length > 4096) throw new VaultError('bad-request', 'apiKey 长度须在 8..4096')
+    const label = (input.label ?? id).slice(0, 80)
+    const models = validateModels(input.models ?? [])
+    return this.mutate((d) => {
+      if (d.channels.some((c) => c.id === id)) throw new VaultError('conflict', `通道已存在: ${id}`)
+      if (d.channels.length >= MAX_CHANNELS) throw new VaultError('bad-request', `通道数超过上限 ${MAX_CHANNELS}`)
+      const ch: ChannelConfig = {
+        id,
+        label,
+        kind: 'openai-compat',
+        baseUrl,
+        apiKey,
+        models,
+        enabled: input.enabled ?? true,
+        createdAt: new Date().toISOString(),
+      }
+      d.channels.push(ch)
+      if (!d.defaultChannelId) d.defaultChannelId = id
+      return masked(ch)
+    })
+  }
+
+  updateChannel(id: string, patch: Partial<Pick<ChannelConfig, 'label' | 'baseUrl' | 'enabled' | 'models'>> & { apiKey?: string }): MaskedChannel {
+    return this.mutate((d) => {
+      const ch = d.channels.find((c) => c.id === id)
+      if (!ch) throw new VaultError('not-found', `通道不存在: ${id}`)
+      if (patch.label !== undefined) ch.label = String(patch.label).slice(0, 80)
+      if (patch.baseUrl !== undefined) ch.baseUrl = validateBaseUrl(patch.baseUrl)
+      if (patch.enabled !== undefined) ch.enabled = Boolean(patch.enabled)
+      if (patch.models !== undefined) ch.models = validateModels(patch.models)
+      if (patch.apiKey !== undefined) {
+        const key = String(patch.apiKey).trim()
+        if (key.length < 8 || key.length > 4096) throw new VaultError('bad-request', 'apiKey 长度须在 8..4096')
+        ch.apiKey = key
+      }
+      return masked(ch)
+    })
+  }
+
+  deleteChannel(id: string): void {
+    this.mutate((d) => {
+      const before = d.channels.length
+      d.channels = d.channels.filter((c) => c.id !== id)
+      if (d.channels.length === before) throw new VaultError('not-found', `通道不存在: ${id}`)
+      if (d.defaultChannelId === id) d.defaultChannelId = d.channels[0]?.id ?? null
+    })
+  }
+
+  setDefaultChannel(id: string | null): void {
+    this.mutate((d) => {
+      if (id !== null && !d.channels.some((c) => c.id === id)) throw new VaultError('not-found', `通道不存在: ${id}`)
+      d.defaultChannelId = id
+    })
+  }
+
+  getBudget(): VaultData['budget'] {
+    return this.load().budget
+  }
+
+  setBudget(confirmThresholdCny: number): void {
+    const v = Number(confirmThresholdCny)
+    if (!Number.isFinite(v) || v < 0 || v > 10000) throw new VaultError('bad-request', '阈值须在 0..10000')
+    this.mutate((d) => {
+      d.budget = { confirmThresholdCny: v }
+    })
+  }
+
+  getGateDefaults(): Record<string, GateMode> {
+    return this.load().gateDefaults
+  }
+
+  setGateDefault(stage: string, mode: GateMode): void {
+    if (!['auto', 'ask', 'manual'].includes(mode)) throw new VaultError('bad-request', `非法 gate 模式: ${mode}`)
+    this.mutate((d) => {
+      d.gateDefaults[stage] = mode
+    })
+  }
+}
+
+function masked(c: ChannelConfig): MaskedChannel {
+  const { apiKey, ...rest } = c
+  return { ...rest, apiKeyMasked: maskCredential(apiKey) }
+}
+
+function validateBaseUrl(u: string): string {
+  const s = String(u ?? '').trim().replace(/\/+$/, '')
+  let parsed: URL
+  try {
+    parsed = new URL(s)
+  } catch {
+    throw new VaultError('bad-request', `非法 baseUrl: ${u}`)
+  }
+  if (parsed.protocol === 'https:') return s
+  if (parsed.protocol === 'http:' && process.env['VGEN_ALLOW_INSECURE'] === '1') return s
+  throw new VaultError('bad-request', 'baseUrl 必须为 https（本地调试可设 VGEN_ALLOW_INSECURE=1）')
+}
+
+function validateModels(models: ChannelModel[]): ChannelModel[] {
+  if (!Array.isArray(models) || models.length > 100) throw new VaultError('bad-request', 'models 须为数组且 ≤100')
+  return models.map((m) => {
+    const model = String(m?.model ?? '')
+    if (model.length < 1 || model.length > 200) throw new VaultError('bad-request', `非法模型名: ${m?.model}`)
+    if (!['image', 'video', 'tts'].includes(m?.kind)) throw new VaultError('bad-request', `非法模型 kind: ${m?.kind}`)
+    const out: ChannelModel = { model, kind: m.kind }
+    if (m.endpointProfile !== undefined) out.endpointProfile = String(m.endpointProfile).slice(0, 120)
+    if (m.pricingCny !== undefined) {
+      const p = Number(m.pricingCny)
+      if (!Number.isFinite(p) || p < 0) throw new VaultError('bad-request', `非法 pricingCny: ${m.pricingCny}`)
+      out.pricingCny = p
+    }
+    if (m.qualityTier !== undefined) {
+      const q = Number(m.qualityTier)
+      if (!Number.isInteger(q) || q < 0 || q > 10) throw new VaultError('bad-request', `非法 qualityTier: ${m.qualityTier}`)
+      out.qualityTier = q
+    }
+    return out
+  })
 }
