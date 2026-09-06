@@ -112,3 +112,15 @@ test('list/prune 对根目录下杂散文件健壮（跳过非目录条目）', 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('stages 值非法视为损坏（.broken 备份路径）', () => {
+  const dir = tmpRuns()
+  try {
+    const store = RunStore.open({ rootDir: dir })
+    const run = store.create('bad-stages')
+    writeFileSync(join(dir, run.id, 'run.json'), JSON.stringify({ id: run.id, status: 'running', stages: { video: 'oops' }, events: [] }), 'utf8')
+    assert.equal(store.get(run.id), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

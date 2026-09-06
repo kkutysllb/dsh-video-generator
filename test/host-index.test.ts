@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/host/index.ts'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 
 interface RegisteredRoute {
   kind: string
@@ -107,14 +107,14 @@ test('api 面：伪造 Host 403 / GET 405 / 非法 JSON 400 / null body 400', as
     const forbidden = fakeRes()
     await api.handler(
       { headers: { host: 'evil.com' }, socket: { remoteAddress: '127.0.0.1' }, method: 'POST', url: '/api/channels.list' } as unknown as Partial<IncomingMessage>,
-      forbidden as unknown as ServerResponse,
+      forbidden,
     )
     assert.equal(forbidden.statusCode, 403)
 
     const notAllowed = fakeRes()
     await api.handler(
       { headers: { host: '127.0.0.1:1' }, socket: { remoteAddress: '127.0.0.1' }, method: 'GET', url: '/api/channels.list' } as unknown as Partial<IncomingMessage>,
-      notAllowed as unknown as ServerResponse,
+      notAllowed,
     )
     assert.equal(notAllowed.statusCode, 405)
 
@@ -130,15 +130,15 @@ test('api 面：伪造 Host 403 / GET 405 / 非法 JSON 400 / null body 400', as
       }) as unknown as Partial<IncomingMessage>
 
     const badJson = fakeRes()
-    await api.handler(reqWith('{broken'), badJson as unknown as ServerResponse)
+    await api.handler(reqWith('{broken'), badJson)
     assert.equal(badJson.statusCode, 400)
 
     const nullBody = fakeRes()
-    await api.handler(reqWith('null'), nullBody as unknown as ServerResponse)
+    await api.handler(reqWith('null'), nullBody)
     assert.equal(nullBody.statusCode, 400)
 
     const okBody = fakeRes()
-    await api.handler(reqWith('{}'), okBody as unknown as ServerResponse)
+    await api.handler(reqWith('{}'), okBody)
     assert.equal(okBody.statusCode, 200)
     assert.ok(okBody.body.includes('channels'))
   } finally {
@@ -161,7 +161,7 @@ test('api 面：超限请求体 413', async () => {
       },
     } as unknown as Partial<IncomingMessage>
     const res = fakeRes()
-    await api.handler(req, res as unknown as ServerResponse)
+    await api.handler(req, res)
     assert.equal(res.statusCode, 413)
     assert.ok(res.body.includes('too-large'))
   } finally {

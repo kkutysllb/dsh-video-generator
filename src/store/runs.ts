@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-export type StageState = 'pending' | 'done' | 'failed'
+export type StageState = 'pending' | 'running' | 'done' | 'failed'
 export type RunStatus = 'running' | 'done' | 'failed'
 
 export interface RunEvent {
@@ -36,6 +36,10 @@ function sanitizeRun(raw: unknown, id: string): RunRecord | null {
   if (typeof r.id !== 'string' || r.id !== id) return null
   if (r.status !== 'running' && r.status !== 'done' && r.status !== 'failed') return null
   if (typeof r.stages !== 'object' || r.stages === null || Array.isArray(r.stages)) return null
+  // stages 值必须为合法四态：值损坏与形状损坏同路径（备份 .broken-* 后按不存在返回）
+  for (const state of Object.values(r.stages as Record<string, unknown>)) {
+    if (state !== 'pending' && state !== 'running' && state !== 'done' && state !== 'failed') return null
+  }
   if (!Array.isArray(r.events)) return null
   return {
     id: r.id,

@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test --test-reporter tap \"test/*.test.ts\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.all.json",
     "demo:mock": "node scripts/demo-mock.ts"
   },
   "main": "./lib/host/index.js",

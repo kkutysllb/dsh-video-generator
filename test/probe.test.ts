@@ -72,8 +72,9 @@ test('fetch 实参契约：URL 归一、Bearer 头、key 不进 URL、signal 传
     return Promise.resolve(new Response(JSON.stringify({ data: [{ id: 'm1' }] }), { status: 200 }))
   }) as unknown as typeof fetch
   await probeChannel({ baseUrl: 'https://api.example.com/v1///', apiKey: 'sk-test-12345678' }, spy)
-  assert.ok(seen, 'fetch 未被调用')
-  const s = seen
+  // seen 仅在 spy 闭包内赋值，TS 流分析在调用点仍视其为初始 null（断言后窄化为 never），显式还原联合类型
+  const s = seen as { url: string; auth: string; hasSignal: boolean } | null
+  assert.ok(s, 'fetch 未被调用')
   assert.equal(s.url, 'https://api.example.com/v1/models')
   assert.equal(s.auth, 'Bearer sk-test-12345678')
   assert.ok(!s.url.includes('sk-test-12345678'))

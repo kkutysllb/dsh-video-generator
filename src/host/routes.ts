@@ -87,13 +87,16 @@ export function handleApi(ctx: ApiContext, name: string, args: Record<string, un
     }
     return { ok: true, value }
   } catch (err) {
-    return { ok: false, error: toError(err) }
+    // VaultError 消息按契约安全（校验/状态类用户可读文案），照常透传；
+    // 非 VaultError 的同步 throw 可能含内部细节（绝对路径/堆栈）：与异步分支一致——详情只进 host 日志，对外泛化
+    if (err instanceof VaultError) return { ok: false, error: toError(err) }
+    console.error('[dsh-video-generator] api error:', err)
+    return { ok: false, error: { code: 'internal', message: 'internal error' } }
   }
 }
 
-function toError(err: unknown): { code: string; message: string } {
-  if (err instanceof VaultError) return { code: err.code, message: err.message }
-  return { code: 'internal', message: err instanceof Error ? err.message : String(err) }
+function toError(err: VaultError): { code: string; message: string } {
+  return { code: err.code, message: err.message }
 }
 
 // 从 JSON args 取非空 string 字段（缺失/类型不符 → bad-request）。

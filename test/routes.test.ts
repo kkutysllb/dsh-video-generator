@@ -196,3 +196,20 @@ test('probe ok:false -> 信封 ok:true 但 value.probe.ok false（契约注释�
     rmSync(c.dir, { recursive: true, force: true })
   }
 })
+
+test('同步内部错误不泄漏细节', () => {
+  const c = ctx()
+  try {
+    // 用只读坏的 probe 触发不了同步路径；直接构造：runs 传一个 get 会抛的假实例
+    const evilRuns = {
+      create: () => { throw new Error('EACCES: permission denied, /Users/libing/secret') },
+      list: () => { throw new Error('EACCES: permission denied, /Users/libing/secret') },
+    } as unknown as RunStore
+    const res = handleApi({ vault: c.vault, runs: evilRuns, probe: probeChannel }, 'runs.list', {}) as { ok: boolean; error: { code: string; message: string } }
+    assert.equal(res.ok, false)
+    assert.equal(res.error.code, 'internal')
+    assert.ok(!res.error.message.includes('/Users/libing/secret'))
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
