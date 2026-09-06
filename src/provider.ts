@@ -49,15 +49,23 @@ export interface Provider {
 const REQUIRED: Array<keyof Provider> = ['id', 'capabilities', 'quote', 'submit', 'status', 'fetch', 'health']
 
 export function assertProvider<T extends Provider>(p: T): T {
+  if (p == null) throw new Error('provider 缺少方法/字段: <null>')
   for (const m of REQUIRED) {
-    if (typeof p[m] === 'undefined') {
-      throw new Error(`provider ${p?.id ?? '?'} 缺少方法/字段: ${String(m)}`)
+    if (p[m] == null) {
+      throw new Error(`provider ${p.id} 缺少方法/字段: ${String(m)}`)
     }
   }
   return p
 }
 
-export function route(providers: Provider[], need: ProviderCapabilities, preferCost = false): Provider | null {
+/** route() 的需求描述只接受布尔能力位；数值能力（时长/分辨率/tier）是排序与报价的输入，不是硬过滤条件。 */
+export type ProviderNeed = Pick<ProviderCapabilities, 'textToVideo' | 'imageToVideo' | 'image' | 'tts'>
+
+/**
+ * 按布尔能力位过滤并按 qualityTier 高->低（preferCost 时低->高）挑出 provider。
+ * @param preferCost true 时按 qualityTier 升序（tier 低 ≈ 成本低）；真实报价见 quote().costEstimate，route 为同步函数不做报价排序
+ */
+export function route(providers: Provider[], need: ProviderNeed, preferCost = false): Provider | null {
   const ok = providers.filter((p) =>
     Object.entries(need).every(([k, v]) => !v || Boolean(p.capabilities[k as keyof ProviderCapabilities])),
   )

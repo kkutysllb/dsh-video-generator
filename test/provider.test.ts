@@ -39,3 +39,25 @@ test('route preferCost 时低价档优先；无匹配返回 null', () => {
   assert.equal(route([high, low], { image: true }, true)?.id, 'low')
   assert.equal(route([low], { imageToVideo: true }), null)
 })
+
+test('route 需求为布尔能力位；数值能力不参与过滤', () => {
+  const anyTier = fakeProvider('any', { image: true }) // 未声明 qualityTier，缺省档 5
+  const got = route([anyTier], { image: true })
+  assert.equal(got?.id, 'any')
+  assert.equal(route([], { image: true }), null)
+})
+
+test('route 不改变入参数组顺序', () => {
+  const a = fakeProvider('a', { image: true, qualityTier: 3 })
+  const b = fakeProvider('b', { image: true, qualityTier: 8 })
+  const arr = [a, b]
+  route(arr, { image: true })
+  assert.deepEqual(arr.map((p) => p.id), ['a', 'b'])
+})
+
+test('assertProvider 对 null 成员与 null 入参抛错', () => {
+  const withNull = fakeProvider('nullish', {})
+  ;(withNull as unknown as Record<string, unknown>)['fetch'] = null
+  assert.throws(() => assertProvider(withNull), /缺少方法/)
+  assert.throws(() => assertProvider(null as unknown as Provider), /缺少方法/)
+})
