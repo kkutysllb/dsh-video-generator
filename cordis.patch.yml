@@ -1,0 +1,4 @@
+# dsh-video-generator plugin registration patch
+- insert:
+    - id: dsh-video-generator
+      name: 'dsh-video-generator'
