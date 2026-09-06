@@ -97,7 +97,6 @@ function sanitize(parsed: unknown): VaultData {
 /** 显式声明字段 + 构造器体内赋值（Node strip-only 禁参数属性）。 */
 export class VaultStore {
   readonly file: string
-  private data: VaultData | null = null
 
   constructor(file: string) {
     this.file = file
@@ -143,8 +142,7 @@ export class VaultStore {
   }
 
   private mutate<T>(fn: (d: VaultData) => T): T {
-    const d = this.data ?? this.load()
-    this.data = d
+    const d = this.load()
     const out = fn(d)
     this.save(d)
     return out
@@ -164,7 +162,7 @@ export class VaultStore {
     const baseUrl = validateBaseUrl(input.baseUrl)
     const apiKey = String(input.apiKey ?? '').trim()
     if (apiKey.length < 8 || apiKey.length > 4096) throw new VaultError('bad-request', 'apiKey 长度须在 8..4096')
-    const label = (input.label ?? id).slice(0, 80)
+    const label = String(input.label ?? id).slice(0, 80)
     const models = validateModels(input.models ?? [])
     return this.mutate((d) => {
       if (d.channels.some((c) => c.id === id)) throw new VaultError('conflict', `通道已存在: ${id}`)
@@ -186,18 +184,22 @@ export class VaultStore {
   }
 
   updateChannel(id: string, patch: Partial<Pick<ChannelConfig, 'label' | 'baseUrl' | 'enabled' | 'models'>> & { apiKey?: string }): MaskedChannel {
+    const label = patch.label !== undefined ? String(patch.label).slice(0, 80) : undefined
+    const baseUrl = patch.baseUrl !== undefined ? validateBaseUrl(patch.baseUrl) : undefined
+    const models = patch.models !== undefined ? validateModels(patch.models) : undefined
+    let apiKey: string | undefined
+    if (patch.apiKey !== undefined) {
+      apiKey = String(patch.apiKey).trim()
+      if (apiKey.length < 8 || apiKey.length > 4096) throw new VaultError('bad-request', 'apiKey 长度须在 8..4096')
+    }
     return this.mutate((d) => {
       const ch = d.channels.find((c) => c.id === id)
       if (!ch) throw new VaultError('not-found', `通道不存在: ${id}`)
-      if (patch.label !== undefined) ch.label = String(patch.label).slice(0, 80)
-      if (patch.baseUrl !== undefined) ch.baseUrl = validateBaseUrl(patch.baseUrl)
+      if (label !== undefined) ch.label = label
+      if (baseUrl !== undefined) ch.baseUrl = baseUrl
       if (patch.enabled !== undefined) ch.enabled = Boolean(patch.enabled)
-      if (patch.models !== undefined) ch.models = validateModels(patch.models)
-      if (patch.apiKey !== undefined) {
-        const key = String(patch.apiKey).trim()
-        if (key.length < 8 || key.length > 4096) throw new VaultError('bad-request', 'apiKey 长度须在 8..4096')
-        ch.apiKey = key
-      }
+      if (models !== undefined) ch.models = models
+      if (apiKey !== undefined) ch.apiKey = apiKey
       return masked(ch)
     })
   }
@@ -262,9 +264,12 @@ function validateBaseUrl(u: string): string {
 
 function validateModels(models: ChannelModel[]): ChannelModel[] {
   if (!Array.isArray(models) || models.length > 100) throw new VaultError('bad-request', 'models 须为数组且 ≤100')
+  const seen = new Set<string>()
   return models.map((m) => {
     const model = String(m?.model ?? '')
     if (model.length < 1 || model.length > 200) throw new VaultError('bad-request', `非法模型名: ${m?.model}`)
+    if (seen.has(model)) throw new VaultError('bad-request', `重复模型名: ${model}`)
+    seen.add(model)
     if (!['image', 'video', 'tts'].includes(m?.kind)) throw new VaultError('bad-request', `非法模型 kind: ${m?.kind}`)
     const out: ChannelModel = { model, kind: m.kind }
     if (m.endpointProfile !== undefined) out.endpointProfile = String(m.endpointProfile).slice(0, 120)

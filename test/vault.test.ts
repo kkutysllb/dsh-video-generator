@@ -169,3 +169,84 @@ test('setDefaultChannel + 预算阈值读写 + 跨实例持久化', () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('两实例交错写：后写者不抹掉外部写入', () => {
+  const home = tmpHome()
+  const file = join(home, 'vault.json')
+  try {
+    const a = VaultStore.open({ file })
+    const b = VaultStore.open({ file })
+    a.createChannel({ id: 'ch-a', baseUrl: 'https://a.example.com/v1', apiKey: 'sk-vgen-aaaaaaaa' })
+    b.createChannel({ id: 'ch-b', baseUrl: 'https://b.example.com/v1', apiKey: 'sk-vgen-bbbbbbbb' })
+    a.setBudget(3) // a 的下一次 mutate 不得用陈旧快照抹掉 ch-b
+    const ids = VaultStore.open({ file }).load().channels.map((c) => c.id).sort()
+    assert.deepEqual(ids, ['ch-a', 'ch-b'])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('deleteChannel 默认通道转移：删默认转首列/删空为 null/删非默认不变', () => {
+  const home = tmpHome()
+  try {
+    const store = VaultStore.open({ file: join(home, 'vault.json') })
+    store.createChannel({ id: 'one', baseUrl: 'https://one.example.com/v1', apiKey: 'sk-vgen-11111111' })
+    store.createChannel({ id: 'two', baseUrl: 'https://two.example.com/v1', apiKey: 'sk-vgen-22222222' })
+    store.setDefaultChannel('one')
+    store.deleteChannel('one')
+    assert.equal(store.load().defaultChannelId, 'two')
+    store.deleteChannel('two')
+    assert.equal(store.load().defaultChannelId, null)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('通道数上限 20', () => {
+  const home = tmpHome()
+  try {
+    const store = VaultStore.open({ file: join(home, 'vault.json') })
+    for (let i = 0; i < 20; i++) {
+      store.createChannel({ id: `ch${String(i).padStart(2, '0')}`, baseUrl: 'https://x.example.com/v1', apiKey: 'sk-vgen-99999999' })
+    }
+    assert.throws(() => store.createChannel({ id: 'ch21', baseUrl: 'https://x.example.com/v1', apiKey: 'sk-vgen-99999999' }), VaultError)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('setGateDefault：非法 mode 抛错、合法写入、跨实例回读', () => {
+  const home = tmpHome()
+  const file = join(home, 'vault.json')
+  try {
+    const store = VaultStore.open({ file })
+    assert.throws(() => store.setGateDefault('story', 'maybe' as never), VaultError)
+    store.setGateDefault('story', 'manual')
+    assert.equal(VaultStore.open({ file }).getGateDefaults()['story'], 'manual')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('setDefaultChannel(null) 显式清空后不被自动重设', () => {
+  const home = tmpHome()
+  try {
+    const store = VaultStore.open({ file: join(home, 'vault.json') })
+    store.createChannel({ id: 'one', baseUrl: 'https://one.example.com/v1', apiKey: 'sk-vgen-11111111' })
+    store.setDefaultChannel(null)
+    assert.equal(store.load().defaultChannelId, null)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('baseUrl 尾斜杠归一存储', () => {
+  const home = tmpHome()
+  try {
+    const store = VaultStore.open({ file: join(home, 'vault.json') })
+    store.createChannel({ id: 'slash', baseUrl: 'https://x.example.com/v1///', apiKey: 'sk-vgen-33333333' })
+    assert.equal(store.getChannel('slash')?.baseUrl, 'https://x.example.com/v1')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
