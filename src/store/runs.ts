@@ -129,7 +129,10 @@ export class RunStore {
   list(): RunRecord[] {
     let ids: string[] = []
     try {
-      ids = readdirSync(this.rootDir)
+      // withFileTypes 直接区分目录与杂散文件（.DS_Store 等），非目录条目跳过，避免 get() 触发 ENOTDIR 放大为整体失败。
+      ids = readdirSync(this.rootDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
     } catch {
       return []
     }

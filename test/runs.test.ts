@@ -98,3 +98,17 @@ test('title 空串兜底 untitled；超长截 120', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('list/prune 对根目录下杂散文件健壮（跳过非目录条目）', () => {
+  const dir = tmpRuns()
+  try {
+    const store = RunStore.open({ rootDir: dir })
+    const run = store.create('keep')
+    writeFileSync(join(dir, '.DS_Store'), 'junk', 'utf8')
+    assert.equal(store.list().length, 1)
+    assert.equal(store.list()[0]!.id, run.id)
+    assert.equal(store.prune(50), 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
