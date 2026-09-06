@@ -26,3 +26,9 @@ test('mock quote 零成本、health 恒 ok、failFirst 可造失败', async () =
   assert.equal(q.costEstimate, 0)
   assert.equal((await p.health()).ok, true)
 })
+
+test('mock 未知 jobId：status unknown / fetch 空产物', async () => {
+  const p = createMockProvider()
+  assert.deepEqual(await p.status('mock-nope'), { state: 'unknown', progress: null, error: 'no-such-job' })
+  assert.deepEqual(await p.fetch('mock-nope'), { outputs: [] })
+})
