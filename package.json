@@ -6,7 +6,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test --test-reporter tap",
+    "test": "node --test --test-reporter tap \"test/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "demo:mock": "node scripts/demo-mock.ts"
   },

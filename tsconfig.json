@@ -8,6 +8,8 @@
     "outDir": "./lib",
     "rootDir": "./src",
     "strict": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
     "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true
