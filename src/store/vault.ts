@@ -52,7 +52,7 @@ export function resolveVaultPath(env: NodeJS.ProcessEnv = process.env): string {
 
 export function maskCredential(s: string): string {
   if (s.length <= 8) return '••••'
-  return `${s.slice(0, 3)}••••${s.slice(-4)}`
+  return `${s.slice(0, 3)}••••${s.slice(-3)}`
 }
 
 /** 显式声明字段 + 构造器体内赋值（Node strip-only 禁参数属性）。 */
