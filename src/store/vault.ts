@@ -66,7 +66,7 @@ function sanitize(parsed: unknown): VaultData {
   if (typeof threshold === 'number' && Number.isFinite(threshold)) {
     d.budget = { confirmThresholdCny: threshold }
   }
-  if (typeof p.gateDefaults === 'object' && p.gateDefaults !== null) d.gateDefaults = p.gateDefaults
+  if (typeof p.gateDefaults === 'object' && p.gateDefaults !== null && !Array.isArray(p.gateDefaults)) d.gateDefaults = p.gateDefaults
   return d
 }
 
@@ -95,9 +95,10 @@ export class VaultStore {
     try {
       parsed = JSON.parse(raw)
     } catch {
-      // 损坏现场先备份原字节（复制失败不阻塞回退），再从默认空库开始。
+      // 损坏现场先备份原字节（复用已读入的 raw，避免重复读盘；含明文 key 必须 0600 落盘），
+      // 备份失败不阻塞回退，再从默认空库开始。
       try {
-        writeFileSync(`${this.file}.broken-${Date.now()}`, readFileSync(this.file))
+        writeFileSync(`${this.file}.broken-${Date.now()}`, raw, { mode: 0o600 })
       } catch {
         // 备份失败不阻塞回退
       }
