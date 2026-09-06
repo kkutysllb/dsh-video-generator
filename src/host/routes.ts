@@ -20,10 +20,43 @@ export interface ApiContext {
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }
 export type MaybePromise<T> = T | Promise<T>
 
-export function isLoopbackRequest(host: string | undefined, remote: string | undefined): boolean {
-  const hostOk = !!host && (host.startsWith('127.0.0.1') || host.startsWith('localhost') || host.startsWith('[::1]'))
-  const ipOk = !!remote && (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1')
-  return hostOk || ipOk
+// 仅精确 loopback 名（'127.0.0.1' 的 URL hostname 形态已剥括号，故 '::1'/'[::1]' 双收录无害）
+const TRUSTED_LOCAL = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+
+// DNS-rebind / 跨站防御（非认证）：Host 头存在即权威精确匹配；remote 仅在 Host 缺失时兜底——
+// 两者绝不互补，防"伪造 host + 回环 remote"组合绕过。
+export function isLoopbackRequest(
+  host: string | string[] | undefined,
+  remote: string | undefined,
+  trustedHosts: readonly string[] = [],
+): boolean {
+  // 重复 Host 头（数组形态）直接拒绝：无法判定意图
+  if (Array.isArray(host)) return false
+  if (host !== undefined && host !== '') {
+    // Host 头存在即权威：必须精确通过；绝不允许 remote 回环补偿伪造 host
+    if (isLoopbackHostname(host)) return true
+    return trustedHosts.some((t) => t === host || t === safeHostname(host))
+  }
+  // Host 缺失（HTTP/1.0 代理等）才退回 remote 回环判断
+  return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
+}
+
+function isLoopbackHostname(host: string): boolean {
+  // 只认精确 loopback 名：经 WHATWG URL 解析规范化（剥端口/括号、小写化）后比对集合。
+  // 不做 127/8 段级放行——'127.0.0.10'、'127.0.0.1.evil.com'、sslip.io 等前缀/段级形态一律拒绝（契约测试钉死）。
+  try {
+    return TRUSTED_LOCAL.has(new URL(`http://${host}`).hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+function safeHostname(host: string): string {
+  try {
+    return new URL(`http://${host}`).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
 }
 
 export function healthPayload(ctx: { vault: VaultStore; runs: RunStore }): Record<string, unknown> {
@@ -43,7 +76,13 @@ export function handleApi(ctx: ApiContext, name: string, args: Record<string, un
     if (value instanceof Promise) {
       return value.then(
         (v) => ({ ok: true, value: v }) as Envelope,
-        (err: unknown) => ({ ok: false, error: toError(err) }),
+        (err: unknown) => {
+          // VaultError 消息按契约安全（校验/状态类用户可读文案），照常透传
+          if (err instanceof VaultError) return { ok: false, error: toError(err) } as Envelope
+          // 非 VaultError 的异步 reject 可能含内部细节（绝对路径/堆栈）：详情只进 host 日志，对外泛化
+          console.error('[dsh-video-generator] api async error:', err)
+          return { ok: false, error: { code: 'internal', message: 'internal error' } } as Envelope
+        },
       )
     }
     return { ok: true, value }
@@ -57,6 +96,16 @@ function toError(err: unknown): { code: string; message: string } {
   return { code: 'internal', message: err instanceof Error ? err.message : String(err) }
 }
 
+// 从 JSON args 取非空 string 字段（缺失/类型不符 → bad-request）。
+function requireString(v: unknown, field: string): string {
+  if (typeof v !== 'string' || v.length === 0) throw new VaultError('bad-request', `字段 ${field} 须为非空字符串`)
+  return v
+}
+
+function optionalString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined
+}
+
 function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>): unknown {
   const id = typeof args['id'] === 'string' ? args['id'] : undefined
   switch (name) {
@@ -64,14 +113,23 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
       return { channels: ctx.vault.listChannels(), defaultChannelId: ctx.vault.load().defaultChannelId }
     case 'channels.create':
       return ctx.vault.createChannel({
-        id: String(args['id'] ?? ''),
-        baseUrl: String(args['baseUrl'] ?? ''),
-        apiKey: String(args['apiKey'] ?? ''),
-        label: args['label'] === undefined ? undefined : String(args['label']),
-        models: (args['models'] ?? []) as never,
+        id: requireString(args['id'], 'id'),
+        baseUrl: requireString(args['baseUrl'], 'baseUrl'),
+        apiKey: requireString(args['apiKey'], 'apiKey'),
+        label: optionalString(args['label']),
+        models: Array.isArray(args['models']) ? args['models'] : undefined,
       })
-    case 'channels.update':
-      return ctx.vault.updateChannel(id ?? '', (args['patch'] ?? {}) as never)
+    case 'channels.update': {
+      const p = (args['patch'] ?? {}) as Record<string, unknown>
+      // 严格类型边界：'false' 字符串不再翻转为 true（非布尔=不更新）；models 非数组=不更新
+      return ctx.vault.updateChannel(requireString(args['id'], 'id'), {
+        label: optionalString(p['label']),
+        baseUrl: optionalString(p['baseUrl']),
+        enabled: typeof p['enabled'] === 'boolean' ? p['enabled'] : undefined,
+        models: Array.isArray(p['models']) ? p['models'] : undefined,
+        apiKey: optionalString(p['apiKey']),
+      })
+    }
     case 'channels.delete':
       ctx.vault.deleteChannel(id ?? '')
       return { deleted: id }
@@ -79,6 +137,7 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
       ctx.vault.setDefaultChannel(id ?? null)
       return { defaultChannelId: id ?? null }
     case 'channels.test': {
+      // 契约：信封 ok:true 表示"探测已执行"；探测成败看 value.probe.ok / value.probe.error（auth-failed/http-*/no-models/timeout/network）
       const ch = id ? ctx.vault.getChannel(id) : null
       if (!ch) throw new VaultError('not-found', `通道不存在: ${id}`)
       return ctx.probe({ baseUrl: ch.baseUrl, apiKey: ch.apiKey }).then((r) => ({ probe: r }))
@@ -90,8 +149,14 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
       return { defaultChannelId: d.defaultChannelId, budget: d.budget, gateDefaults: d.gateDefaults }
     }
     case 'settings.update': {
-      if (args['confirmThresholdCny'] !== undefined) ctx.vault.setBudget(Number(args['confirmThresholdCny']))
-      return ctx.vault.load().budget
+      // null 不再静默清零：undefined=不更新；非有限数字拒绝
+      const t = args['confirmThresholdCny']
+      if (t !== undefined) {
+        if (typeof t !== 'number' || !Number.isFinite(t)) throw new VaultError('bad-request', 'confirmThresholdCny 须为数字')
+        ctx.vault.setBudget(t)
+      }
+      const d = ctx.vault.load()
+      return { budget: d.budget, gateDefaults: d.gateDefaults }
     }
     default:
       throw new VaultError('bad-request', `unknown-method: ${name}`)

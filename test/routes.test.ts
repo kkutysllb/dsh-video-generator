@@ -20,10 +20,25 @@ function ctx() {
   }
 }
 
-test('信任围栏：loopback host/ip 放行，其他拒绝', () => {
+test('信任围栏：loopback 精确匹配放行', () => {
   assert.equal(isLoopbackRequest('127.0.0.1:3000', '127.0.0.1'), true)
   assert.equal(isLoopbackRequest('localhost:3000', '::1'), true)
-  assert.equal(isLoopbackRequest('evil.example.com', '10.1.2.3'), false)
+  assert.equal(isLoopbackRequest('[::1]:3000', '127.0.0.1'), true)
+})
+
+test('信任围栏：前缀伪造与 rebind 组合全部拒绝', () => {
+  assert.equal(isLoopbackRequest('127.0.0.1.evil.com', '10.1.2.3'), false)
+  assert.equal(isLoopbackRequest('localhost.attacker.io', '10.1.2.3'), false)
+  assert.equal(isLoopbackRequest('127.0.0.10', '10.1.2.3'), false)
+  assert.equal(isLoopbackRequest('evil.com', '127.0.0.1'), false) // 真 rebind 形态：remote 回环不补偿伪造 host
+  assert.equal(isLoopbackRequest(['127.0.0.1', 'evil.com'], '127.0.0.1'), false) // 重复 Host 头
+  assert.equal(isLoopbackRequest(undefined, '127.0.0.1'), true) // Host 缺失退 remote
+  assert.equal(isLoopbackRequest(undefined, '10.1.2.3'), false)
+})
+
+test('信任围栏：trustedHosts 精确放行', () => {
+  assert.equal(isLoopbackRequest('lab.internal:3000', '10.1.2.3', ['lab.internal']), true)
+  assert.equal(isLoopbackRequest('lab.internal:3000', '10.1.2.3', ['other.internal']), false)
 })
 
 test('healthPayload 汇报版本与通道计数（不含任何明文）', () => {
@@ -117,6 +132,66 @@ test('runs.list 通过 handleApi 可用', () => {
     const res = handleApi(c.api, 'runs.list', {}) as { ok: boolean; value: { runs: unknown[] } }
     assert.equal(res.ok, true)
     assert.equal(res.value.runs.length, 1)
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('channels.create 重复 id -> conflict 信封；响应含 apiKeyMasked', async () => {
+  const c = ctx()
+  try {
+    handleApi(c.api, 'channels.create', { id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
+    const dup = handleApi(c.api, 'channels.create', { id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' }) as { ok: boolean; error: { code: string } }
+    assert.equal(dup.ok, false)
+    assert.equal(dup.error.code, 'conflict')
+    const list = handleApi(c.api, 'channels.list', {}) as { value: { channels: Array<Record<string, unknown>> } }
+    assert.ok('apiKeyMasked' in list.value.channels[0]!)
+    assert.ok(!('apiKey' in list.value.channels[0]!))
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('宽进收窄：apiKey 对象/enabled 字符串/threshold null', () => {
+  const c = ctx()
+  try {
+    const bad = handleApi(c.api, 'channels.create', { id: 'x', baseUrl: 'https://x.example.com/v1', apiKey: {} }) as { ok: boolean; error: { code: string } }
+    assert.equal(bad.error.code, 'bad-request')
+    handleApi(c.api, 'channels.create', { id: 'x', baseUrl: 'https://x.example.com/v1', apiKey: 'sk-vgen-12345678' })
+    handleApi(c.api, 'channels.update', { id: 'x', patch: { enabled: 'false' } }) // 字符串被忽略，不翻转
+    assert.equal(c.vault.getChannel('x')?.enabled, true)
+    const t = handleApi(c.api, 'settings.update', { confirmThresholdCny: null }) as { ok: boolean; error?: { code: string } }
+    assert.equal(t.ok, false)
+    assert.equal(c.vault.getBudget().confirmThresholdCny, 1) // 未被清零
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('probe reject -> internal 泛化信封（不泄漏细节）', async () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
+    const boom = (async () => { throw new Error('ECONNREFUSED /Users/libing/secret/path') }) as unknown as typeof probeChannel
+    const res = await handleApi({ vault: c.vault, runs: c.runs, probe: boom }, 'channels.test', { id: 've' })
+    assert.equal((res as { ok: boolean }).ok, false)
+    const msg = JSON.stringify(res)
+    assert.ok(!msg.includes('/Users/libing/secret'))
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('probe ok:false -> 信封 ok:true 但 value.probe.ok false（契约注释钉住）', async () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
+    const failProbe = (async () => ({ ok: false, baseUrl: 'https://api.example.com/v1', models: [], status: 401, error: 'auth-failed' as const })) as unknown as typeof probeChannel
+    const res = await handleApi({ vault: c.vault, runs: c.runs, probe: failProbe }, 'channels.test', { id: 've' })
+    const value = (res as { ok: boolean; value: { probe: { ok: boolean; error?: string } } }).value
+    assert.equal((res as { ok: boolean }).ok, true)
+    assert.equal(value.probe.ok, false)
+    assert.equal(value.probe.error, 'auth-failed')
   } finally {
     rmSync(c.dir, { recursive: true, force: true })
   }
