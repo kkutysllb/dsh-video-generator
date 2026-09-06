@@ -11,6 +11,9 @@ export const name = PLUGIN_ID
 /** cordis 依赖声明：webServer 服务就绪后才 apply（对齐 dsh-super-ppts 的模块级 inject 约定）。 */
 export const inject = ['webServer']
 
+/** 请求体超限：显式字段形式（erasableSyntaxOnly 禁参数属性），接线 catch 借此区分 413/400。 */
+class BodyTooLargeError extends Error {}
+
 interface WebServerFace {
   register(route: {
     kind: 'exact' | 'prefix'
@@ -69,8 +72,12 @@ export function apply(ctx: HostContext): () => void {
           let body: Record<string, unknown> = {}
           try {
             body = await readJsonBody(req)
-          } catch {
-            json(res, 400, { ok: false, error: { code: 'bad-json', message: '请求体非法 JSON' } })
+          } catch (err) {
+            if (err instanceof BodyTooLargeError) {
+              json(res, 413, { ok: false, error: { code: 'too-large', message: '请求体超过 1MB' } })
+            } else {
+              json(res, 400, { ok: false, error: { code: 'bad-json', message: '请求体非法 JSON' } })
+            }
             return
           }
           const envelope = await handleApi({ vault, runs, probe: probeChannel }, methodName, body)
@@ -103,10 +110,15 @@ async function readJsonBody(req: IncomingMessage, limitBytes = 1 << 20): Promise
   let total = 0
   for await (const chunk of req) {
     total += (chunk as Buffer).length
-    if (total > limitBytes) throw new Error('body too large')
+    if (total > limitBytes) throw new BodyTooLargeError()
     chunks.push(chunk as Buffer)
   }
   const raw = Buffer.concat(chunks).toString('utf8').trim()
   if (!raw) return {}
-  return JSON.parse(raw) as Record<string, unknown>
+  // 形状守卫：JSON.parse 后必须为对象（null/数组/标量一律 400，防 null args 打穿下游 dispatch）。
+  const parsed: unknown = JSON.parse(raw)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('body must be a json object')
+  }
+  return parsed as Record<string, unknown>
 }

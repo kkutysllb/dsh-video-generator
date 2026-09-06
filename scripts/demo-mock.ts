@@ -13,7 +13,9 @@ async function main(): Promise<void> {
   runs.setStage(run.id, 'video', 'running')
   const { jobId } = await p.submit('video', { prompt: 'mock 冒烟' })
   let status = await p.status(jobId)
+  let polls = 0
   while (status.state === 'running') {
+    if (++polls > 50) throw new Error('mock poll 超过上限')
     status = await p.status(jobId)
   }
   if (status.state !== 'done') throw new Error(`mock 未完成: ${status.state}`)
@@ -25,10 +27,11 @@ async function main(): Promise<void> {
     writeFileSync(join(outDir, `shot-${i}.txt`), `placeholder for ${out}`)
   }
   runs.setStage(run.id, 'video', 'done')
+  runs.setStatus(run.id, 'done')
   runs.appendEvent(run.id, 'mock-done', { jobId, outputs: fetched.outputs })
 
   const final = runs.get(run.id)
-  if (final?.stages['video'] !== 'done') throw new Error('run 状态未落盘')
+  if (final?.stages['video'] !== 'done' || final?.status !== 'done') throw new Error('run 状态未落盘')
   console.log(`[demo:mock] OK run=${run.id} clips=${join(outDir, 'shot-0.txt')}`)
 }
 
