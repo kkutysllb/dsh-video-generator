@@ -28,3 +28,23 @@ test('覆盖可只改部分字段且不污染内置表', () => {
   assert.equal(resolveModel('seedream-4.0').entry.qualityTier, before)
   assert.equal(before, 5)
 })
+
+test('mutate 解析结果的 capabilities 不回写内置表', () => {
+  const r = resolveModel('kling-v3')
+  const caps = r.entry.capabilities as { qualityTier?: number }
+  caps.qualityTier = 99
+  assert.equal(resolveModel('kling-v3').entry.capabilities.qualityTier, 5)
+})
+
+test('tts 组与空覆盖语义', () => {
+  assert.equal(resolveModel('gpt-4o-mini-tts').entry.kind, 'tts')
+  assert.equal(resolveModel('wan2.2-t2v-plus', {}).source, 'builtin')
+})
+
+test('builtin 注入：顺序决定混合命名归档（video 组须最前）', () => {
+  const rules = [
+    { patterns: ['video'], kind: 'video' as const, capabilities: {}, qualityTier: 5 },
+    { patterns: ['image'], kind: 'image' as const, capabilities: {}, qualityTier: 5 },
+  ]
+  assert.equal(resolveModel('image-to-video-model', undefined, rules).entry.kind, 'video')
+})

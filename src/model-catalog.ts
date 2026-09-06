@@ -17,6 +17,7 @@ interface BuiltinRule extends CatalogEntry {
 const VIDEO: ProviderCapabilities = { imageToVideo: true, textToVideo: true, maxDurationSec: 10, qualityTier: 5 }
 const IMAGE: ProviderCapabilities = { image: true, qualityTier: 5 }
 
+// 顺序敏感：video 组必须最前——通用词 'video' 优先消解 'image-to-video-*' 类混合命名（ModelKind 表达产出物形态，输入模态由 capabilities 位表达）。新增规则前先想清楚摆放位置。
 export const BUILTIN_CATALOG: BuiltinRule[] = [
   { patterns: ['seedance', 'kling', 'wan2', 'wan-x', 'hailuo', 'sora', 'vidu', 'video'], kind: 'video', capabilities: VIDEO, qualityTier: 5 },
   { patterns: ['seedream', 'flux', 'mj', 'midjourney', 'dall', 'sd3', 'image', 'banana'], kind: 'image', capabilities: IMAGE, qualityTier: 5 },
@@ -48,12 +49,13 @@ function matchBuiltin(id: string, rules: BuiltinRule[]): CatalogEntry | null {
   for (const r of rules) {
     if (r.patterns.some((p) => id.includes(p))) {
       const { patterns, ...entry } = r
-      return entry
+      return { ...entry, capabilities: { ...entry.capabilities } }
     }
   }
   return null
 }
 
+// 确认判据 = source === 'unknown'（规格 §4.4）；pricingCny 缺失只表示"价目未知，走 quote() 估价"，二者不可混用。
 function unknownEntry(): CatalogEntry {
   return { kind: 'video', capabilities: { ...VIDEO }, qualityTier: 5, pricingCny: undefined }
 }
