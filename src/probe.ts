@@ -1,4 +1,5 @@
 /** 通道探测：/models 枚举 + 鉴权校验。开发前置（M0 实测）与产品"测试通道"共用。 */
+// 注意：probe.ok 只代表 /models 可达且返回了模型清单；部分中转不校验 /models 的 token，不能等同生成端点的鉴权/可用性证明。
 
 export interface ProbeTarget {
   baseUrl: string
@@ -10,8 +11,10 @@ export interface ProbeResult {
   baseUrl: string
   models: string[]
   status: number | null
-  error?: 'auth-failed' | 'no-models' | 'bad-json' | 'network' | `http-${number}`
+  error?: 'auth-failed' | 'no-models' | 'bad-json' | 'network' | 'timeout' | `http-${number}`
 }
+
+const isAbortError = (err: unknown): boolean => err instanceof Error && err.name === 'AbortError'
 
 export async function probeChannel(
   target: ProbeTarget,
@@ -36,19 +39,23 @@ export async function probeChannel(
     let json: unknown
     try {
       json = await res.json()
-    } catch {
+    } catch (err) {
+      if (isAbortError(err)) {
+        return { ok: false, baseUrl: base, models: [], status: res.status, error: 'timeout' }
+      }
       return { ok: false, baseUrl: base, models: [], status: res.status, error: 'bad-json' }
     }
     const obj = json as { data?: unknown; models?: unknown }
     const raw = Array.isArray(obj.data) ? obj.data : Array.isArray(obj.models) ? obj.models : []
-    const models = raw
-      .map((m) => (typeof m === 'string' ? m : (m as { id?: string })?.id ?? ''))
-      .filter((s) => typeof s === 'string' && s.length > 0)
+    const models = Array.from(
+      new Set(raw.map((m) => (typeof m === 'string' ? m : (m as { id?: string })?.id ?? ''))),
+    )
+      .filter((s) => s.length > 0)
       .sort()
     if (!models.length) return { ok: false, baseUrl: base, models: [], status: res.status, error: 'no-models' }
     return { ok: true, baseUrl: base, models, status: res.status }
-  } catch {
-    return { ok: false, baseUrl: base, models: [], status: null, error: 'network' }
+  } catch (err) {
+    return { ok: false, baseUrl: base, models: [], status: null, error: isAbortError(err) ? 'timeout' : 'network' }
   } finally {
     clearTimeout(timer)
   }

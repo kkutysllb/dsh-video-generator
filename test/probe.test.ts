@@ -40,3 +40,55 @@ test('401 -> auth-failed；404 -> http-404；空列表 -> no-models', async () =
   )
   assert.equal(empty.error, 'no-models')
 })
+
+test('超时中止 -> error timeout（外层）', async () => {
+  const slow = ((_url: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })) as unknown as typeof fetch
+  const r = await probeChannel({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test-12345678' }, slow, 40)
+  assert.equal(r.error, 'timeout')
+  assert.equal(r.status, null)
+})
+
+test('响应体读取中途 abort -> error timeout（非 bad-json）', async () => {
+  const midBodyAbort = ((_url: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })) as unknown as typeof fetch
+  const r = await probeChannel({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test-12345678' }, midBodyAbort, 40)
+  assert.equal(r.error, 'timeout')
+})
+
+test('fetch 实参契约：URL 归一、Bearer 头、key 不进 URL、signal 传递', async () => {
+  let seen: { url: string; auth: string; hasSignal: boolean } | null = null
+  const spy = ((url: unknown, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    seen = {
+      url: String(url),
+      auth: headers['Authorization'] ?? '',
+      hasSignal: init?.signal instanceof AbortSignal,
+    }
+    return Promise.resolve(new Response(JSON.stringify({ data: [{ id: 'm1' }] }), { status: 200 }))
+  }) as unknown as typeof fetch
+  await probeChannel({ baseUrl: 'https://api.example.com/v1///', apiKey: 'sk-test-12345678' }, spy)
+  assert.ok(seen, 'fetch 未被调用')
+  const s = seen
+  assert.equal(s.url, 'https://api.example.com/v1/models')
+  assert.equal(s.auth, 'Bearer sk-test-12345678')
+  assert.ok(!s.url.includes('sk-test-12345678'))
+  assert.equal(s.hasSignal, true)
+})
+
+test('bad-json 与 network', async () => {
+  const badJson = (async () => new Response('<html>not json</html>', { status: 200 })) as unknown as typeof fetch
+  assert.equal((await probeChannel({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test-12345678' }, badJson)).error, 'bad-json')
+  const netFail = (async () => { throw new Error('ECONNREFUSED') }) as unknown as typeof fetch
+  assert.equal((await probeChannel({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test-12345678' }, netFail)).error, 'network')
+})
+
+test('models 去重', async () => {
+  const dup = (async () => new Response(JSON.stringify({ data: [{ id: 'm1' }, { id: 'm1' }, { id: 'm2' }] }), { status: 200 })) as unknown as typeof fetch
+  const r = await probeChannel({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test-12345678' }, dup)
+  assert.deepEqual(r.models, ['m1', 'm2'])
+})
