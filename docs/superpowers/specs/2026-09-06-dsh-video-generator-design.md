@@ -103,8 +103,10 @@ src/
 
 | 工具 | 职责 |
 |---|---|
-| `vgen_story` / `vgen_script` / `vgen_storyboard` | 会话模型三段交接：结构化 JSON → 校验 + 落盘 + 开 run |
-| `vgen_generate` | 触发非 LLM 段：`{runId, target: 'assets'\|'video'\|'final'}`，auto 跑到目标段 |
+| `vgen_story` | 提交结构化故事 JSON → 校验 → **开新 run** 并落盘 `story.json`，返回 runId |
+| `vgen_script` | `{runId, script}`：故事→剧本交接 → 校验 + 落盘 `script.json` |
+| `vgen_storyboard` | `{runId, shots}`：分镜交接 → 校验 + 注入四层提示词 + 落盘 `storyboard.json` |
+| `vgen_generate` | `{runId, target: 'assets'\|'video'\|'final'}`：从首个未完成段**顺序执行至 target 段**（含 target），逐段落盘后返回 |
 | `vgen_status` | run 进度 / 各段状态 / 断点恢复指引 |
 | `vgen_review` | 抽帧评分 + 触发重拍 |
 | `vgen_channels` | 通道健康 / 中转余额（health 可得时）/ 价目 / 累计消耗 |
