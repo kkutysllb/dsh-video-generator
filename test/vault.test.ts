@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { maskCredential, resolveVaultPath, VaultStore } from '../src/store/vault.ts'
@@ -12,6 +12,8 @@ function tmpHome(): string {
 test('maskCredential 短串全遮、长串前3后3', () => {
   assert.equal(maskCredential('abc'), '••••')
   assert.equal(maskCredential('sk-1234567890xyz'), 'sk-••••xyz')
+  assert.equal(maskCredential('12345678'), '••••')
+  assert.equal(maskCredential('123456789'), '123••••789')
 })
 
 test('resolveVaultPath 跟随 DSH_HOME，无则回退 home', () => {
@@ -20,7 +22,7 @@ test('resolveVaultPath 跟随 DSH_HOME，无则回退 home', () => {
   assert.ok(p.includes(join('.dsh-video-generator', 'vault.json')))
 })
 
-test('save 落盘为 0600、目录 0700、内容可回读', () => {
+test('save 落盘为 0600、目录 0700、内容可回读', { skip: process.platform === 'win32' && 'POSIX 权限位在 Windows 无意义' }, () => {
   const home = tmpHome()
   try {
     const store = VaultStore.open({ file: join(home, '.dsh-video-generator', 'vault.json') })
@@ -42,6 +44,55 @@ test('损坏文件从默认空库开始，不抛错', () => {
     const file = join(home, 'vault.json')
     writeFileSync(file, '{broken', 'utf8')
     const store = VaultStore.open({ file })
+    assert.deepEqual(store.load().channels, [])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('load 对合法但形状错误的 JSON 逐字段守卫，回退默认', () => {
+  const home = tmpHome()
+  try {
+    const file = join(home, 'vault.json')
+    writeFileSync(file, JSON.stringify({ channels: 'oops', defaultChannelId: 42, budget: { confirmThresholdCny: 'x' }, gateDefaults: 'no', version: 99 }), 'utf8')
+    const d = VaultStore.open({ file }).load()
+    assert.deepEqual(d.channels, [])
+    assert.equal(d.defaultChannelId, null)
+    assert.equal(d.budget.confirmThresholdCny, 1)
+    assert.deepEqual(d.gateDefaults, {})
+    assert.equal(d.version, 1)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('读失败仅 ENOENT 回退，EACCES 原样抛出', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = tmpHome()
+  try {
+    const file = join(home, 'vault.json')
+    writeFileSync(file, 'ok', 'utf8')
+    chmodSync(file, 0o000)
+    try {
+      assert.throws(() => VaultStore.open({ file }).load())
+    } finally {
+      chmodSync(file, 0o600)
+    }
+    assert.equal(VaultStore.open({ file: join(home, 'nope.json') }).load().channels.length, 0)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('parse 失败先备份 .broken-* 再回退，且保存后可恢复读写', () => {
+  const home = tmpHome()
+  try {
+    const file = join(home, 'vault.json')
+    writeFileSync(file, '{broken', 'utf8')
+    const store = VaultStore.open({ file })
+    assert.deepEqual(store.load().channels, [])
+    const leftovers = readdirSync(home).filter((f) => f.startsWith('vault.json.broken-'))
+    assert.equal(leftovers.length, 1)
+    store.save(store.load())
     assert.deepEqual(store.load().channels, [])
   } finally {
     rmSync(home, { recursive: true, force: true })
