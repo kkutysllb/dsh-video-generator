@@ -72,7 +72,7 @@ export function buildShotPrompt(input: ShotInput): MergedPrompt {
   const dna = clean(input.style)
   const shotTemplate = clean(input.camera)
   const anchors = input.characterAnchors.length ? `角色：${input.characterAnchors.join('、')}` : ''
-  const ref = clean(input.referenceHint) ? '画面严格参考参考图中的角色形象与风格' : ''
+  const ref = clean(input.referenceHint)
   const manual = [clean(input.line), anchors, ref].filter(Boolean).join('，')
   return mergePromptLayers({ dna, shotTemplate, manual })
 }

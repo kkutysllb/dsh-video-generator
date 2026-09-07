@@ -46,10 +46,11 @@ test('单镜提示词：分镜行+角色锚定+景别运镜合层', () => {
     characterAnchors: ['林鲸（蓝色皮肤的小鲸鱼）'],
     camera: '中景，缓慢推进',
     style: '3d render, clean style',
-    referenceHint: '参考图中的角色形象',
+    referenceHint: '参考图中的角色形象，与林鲸前一部作品同款配色',
   })
   assert.ok(p.positive.includes('鲸鱼跃出海面'))
   assert.ok(p.positive.includes('林鲸（蓝色皮肤的小鲸鱼）'))
   assert.ok(p.positive.includes('中景，缓慢推进'))
   assert.ok(p.positive.includes('参考图中的角色形象'))
+  assert.ok(p.positive.includes('与林鲸前一部作品同款配色'))
 })
