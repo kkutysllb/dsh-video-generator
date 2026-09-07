@@ -14,6 +14,7 @@ import { estimateCny, type PricingTable } from '../pricing.ts'
 import { buildCharacterSheetPrompt, buildScenePrompt, buildShotPrompt } from '../prompts.ts'
 import { STAGES, type StageId } from '../stages.ts'
 import { retryTransient } from '../poll.ts'
+import { RelayError } from '../providers/relay-http.ts'
 import { generateShotClip, saveUrl, SHOT_MOTION_PROMPT } from './shot-clip.ts'
 import { buildTimeline, writeSrt, type TimelineData, Timeline } from '../finalcut/timeline.ts'
 import { renderTimeline, probeDurationSec } from '../finalcut/render-ffmpeg.ts'
@@ -43,6 +44,27 @@ export interface MachineDeps {
 
 const IMAGE_MODEL_DEFAULT = 'doubao-seedream-4-0-250828'
 export const VIDEO_MODEL_DEFAULT = 'happyhorse-1.1-i2v'
+
+/** 9:16 画布用竖版参考图（2:3 为中转普遍支持的最接近竖档，渲染端 crop 归一化消黑边）。 */
+const IMAGE_SIZE_PORTRAIT = '1024x1536'
+/** 角色三视图卡：横向并排三视图，横版构图。 */
+const IMAGE_SIZE_LANDSCAPE = '1536x1024'
+
+/** size 透传 + 服务端 400 单次降级（部分上游不认 size 参数；429/5xx 走外层 retryTransient）。 */
+async function submitImageWithSize(
+  p: Provider, stage: StageId, prompt: string, size: string | undefined, onFallback: () => void,
+): Promise<string> {
+  if (!size) return (await p.submit(stage, { prompt })).jobId
+  try {
+    return (await p.submit(stage, { prompt, size })).jobId
+  } catch (err) {
+    if (err instanceof RelayError && err.status === 400) {
+      onFallback()
+      return (await p.submit(stage, { prompt })).jobId
+    }
+    throw err
+  }
+}
 
 /** manual gate 拦截（工具层转 manual-gate 信封，指引 vgen_provide）。 */
 export class ManualGateError extends Error {}
@@ -153,14 +175,16 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       mkdirSync(assetDir, { recursive: true })
       const imageModel = deps.imageModel ?? IMAGE_MODEL_DEFAULT
       const p = deps.providers.forModel(imageModel, { fetchImpl })
-      const jobs: Array<{ file: string; prompt: string }> = [
+      const jobs: Array<{ file: string; prompt: string; size: string }> = [
         ...script.characters.map((c) => ({
           file: join(assetDir, `char-${c.id}.png`),
           prompt: buildCharacterSheetPrompt({ name: c.name, appearance: c.appearance, style: script.style }).positive,
+          size: IMAGE_SIZE_LANDSCAPE,
         })),
         ...script.scenes.map((sc) => ({
           file: join(assetDir, `scene-${sc.id}.png`),
           prompt: buildScenePrompt({ name: sc.name, description: sc.description, style: script.style }).positive,
+          size: IMAGE_SIZE_PORTRAIT,
         })),
       ]
       const urls: Array<{ key: string; url: string }> = []
@@ -169,7 +193,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         await pump(jobs, deps.concurrency ?? 2, async (job) => {
           const est = deps.pricing ? estimateCny(imageModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'image'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
-          const { jobId: url } = await retryTransient(() => p.submit(st, { prompt: job.prompt }))
+          const url = await retryTransient(() =>
+            submitImageWithSize(p, st, job.prompt, job.size, () => runs.appendEvent(runId, 'size-fallback', { stage: st, size: job.size })),
+          )
           runs.appendEvent(runId, 'spend', { stage: st, model: imageModel, estCny: est, jobId: String(url).slice(0, 80) })
           await saveUrl(fetchImpl, url, job.file)
           urls.push({ key: job.file, url })
@@ -210,7 +236,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           })
           const est = deps.pricing ? estimateCny(imageModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'image'))) throw new Error(`用户取消（shot ${shot.index}）`)
-          const { jobId: url } = await retryTransient(() => p.submit(st, { prompt: merged.positive }))
+          const url = await retryTransient(() =>
+            submitImageWithSize(p, st, merged.positive, IMAGE_SIZE_PORTRAIT, () => runs.appendEvent(runId, 'size-fallback', { stage: st, size: IMAGE_SIZE_PORTRAIT })),
+          )
           runs.appendEvent(runId, 'spend', { stage: st, model: imageModel, estCny: est, shot: shot.index, jobId: String(url).slice(0, 80) })
           const file = join(shotsDir, `shot-${String(shot.index).padStart(3, '0')}.png`)
           await saveUrl(fetchImpl, url, file)

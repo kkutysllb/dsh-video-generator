@@ -1,4 +1,4 @@
-/** ffmpeg 渲染通道：归一化（scale/pad/fps）→ concat → drawtext 字幕 → 混音（规格 §5 成片链路）。 */
+/** ffmpeg 渲染通道：归一化（scale 覆盖 + crop 中心裁切/fps）→ concat → drawtext 字幕 → 混音（规格 §5 成片链路）。 */
 // 归一化 -an 会丢弃 clip 自带音轨；配音一律走 timeline.audio 通道。
 
 import { execFile } from 'node:child_process'
@@ -52,7 +52,7 @@ export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: st
     const out = join(opts.workDir, `norm-${String(i).padStart(3, '0')}.mp4`)
     const args = [
       '-y', '-i', c.src,
-      '-vf', `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=${fps},format=yuv420p`,
+      '-vf', `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},format=yuv420p`,
       '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
       out,
     ]

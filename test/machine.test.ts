@@ -4,14 +4,18 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { advanceRun } from '../src/pipeline/machine.ts'
+import { RelayError } from '../src/providers/relay-http.ts'
 import { RunStore } from '../src/store/runs.ts'
 import { STORY, SCRIPT, SHOTS } from './schema-fixtures.ts'
 
-function fakeImageProvider(url: string) {
+function fakeImageProvider(url: string, submitSpecs?: Array<Record<string, unknown>>) {
   return {
     id: 'fake-image', capabilities: { image: true, qualityTier: 5 },
     quote: async () => ({ qualityTier: 5, costEstimate: 0.2, currency: 'CNY' }),
-    submit: async () => ({ jobId: url }),
+    submit: async (_s: string, spec: Record<string, unknown>) => {
+      submitSpecs?.push({ ...spec })
+      return { jobId: url }
+    },
     status: async () => ({ state: 'done' as const, progress: 100 }),
     fetch: async (jobId: string) => ({ outputs: [jobId] }),
     health: async () => ({ ok: true }),
@@ -170,6 +174,67 @@ test('advanceRun：确认被拒 -> 报用户取消；gate manual 未提供产物
       advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'master-asset', providers, confirmer: async () => true, ffmpeg: null, gates: { 'master-asset': 'manual' } }),
       /manual/,
     )
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: shot-assets 提交带竖版 size（1024x1536）', async () => {
+  const s = setup()
+  try {
+    const submitSpecs: Array<Record<string, unknown>> = []
+    const providers = { forModel: () => fakeImageProvider('https://img.example/shot.png', submitSpecs) }
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    const r = await advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'shot-assets', providers, confirmer: async () => true, ffmpeg: null })
+    assert.equal(r.stages['shot-assets'], 'done')
+    assert.equal(submitSpecs.length, 3) // 3 镜各一次
+    for (const spec of submitSpecs) assert.equal(spec['size'], '1024x1536')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: 服务端 400 时单次降级重提（无 size），size-fallback 事件入流', async () => {
+  const s = setup()
+  try {
+    const submitSpecs: Array<Record<string, unknown>> = []
+    const fallbackImage = {
+      id: 'fake-image-400', capabilities: { image: true, qualityTier: 5 },
+      quote: async () => ({ qualityTier: 5, costEstimate: 0.2, currency: 'CNY' }),
+      submit: async (_s: string, spec: Record<string, unknown>) => {
+        submitSpecs.push({ ...spec })
+        if (spec['size'] !== undefined) throw new RelayError(400, 'size 参数不支持')
+        return { jobId: 'https://img.example/fallback.png' }
+      },
+      status: async () => ({ state: 'done' as const, progress: 100 }),
+      fetch: async (jobId: string) => ({ outputs: [jobId] }),
+      health: async () => ({ ok: true }),
+    }
+    const providers = { forModel: () => fallbackImage }
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    const r = await advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'shot-assets', providers, confirmer: async () => true, ffmpeg: null })
+    assert.equal(r.stages['shot-assets'], 'done')
+    assert.ok(submitSpecs.length >= 4) // 3 镜 ×（带 size 400 + 无 size 重提）
+    const shotSpec = submitSpecs.find((x) => x['size'] !== undefined)
+    assert.equal(shotSpec?.['size'], '1024x1536')
+    assert.equal(submitSpecs.filter((x) => x['size'] === undefined).length, 3)
+    const fb = s.runs.get(s.run.id)!.events.filter((e) => e.type === 'size-fallback')
+    assert.ok(fb.length >= 1, '事件流应含 size-fallback')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: master-asset 角色卡横版 size / 场景图竖版 size', async () => {
+  const s = setup()
+  try {
+    const submitSpecs: Array<Record<string, unknown>> = []
+    const providers = { forModel: () => fakeImageProvider('https://img.example/x.png', submitSpecs) }
+    const r = await advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'master-asset', providers, confirmer: async () => true, ffmpeg: null })
+    assert.equal(r.stages['master-asset'], 'done')
+    assert.ok(submitSpecs.length >= 2)
+    assert.ok(submitSpecs.some((x) => x['size'] === '1536x1024'), 'char 任务应横版 1536x1024')
+    assert.ok(submitSpecs.some((x) => x['size'] === '1024x1536'), 'scene 任务应竖版 1024x1536')
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }

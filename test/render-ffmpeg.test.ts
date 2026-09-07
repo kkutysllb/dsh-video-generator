@@ -24,6 +24,10 @@ test('buildRenderPlan：两阶段命令（逐 clip 归一化 + concat/drawtext/a
     assert.equal(plan.normalize.length, 2)
     assert.ok(plan.normalize[0]!.args.includes('-vf'))
     assert.ok(plan.normalize[0]!.args.some((a) => a.includes('scale=1080:1920')))
+    const vf = plan.normalize[0]!.args[plan.normalize[0]!.args.indexOf('-vf') + 1] as string
+    assert.ok(vf.includes('force_original_aspect_ratio=increase'), '归一化须用 increase（覆盖式缩放）')
+    assert.ok(vf.includes('crop=1080:1920'), '超出部分中心裁切（消黑边）')
+    assert.ok(!vf.includes('pad='), 'M4 回归：不得再引入 pad（9:16 画布黑边根因）')
     const fc = plan.composite.args[plan.composite.args.indexOf('-filter_complex') + 1] as string
     assert.ok(fc.includes('concat=n=2'))
     assert.ok(fc.includes("drawtext=text='第一句'"))

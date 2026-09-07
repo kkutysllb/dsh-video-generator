@@ -2,7 +2,7 @@
  *  用法: VGEN_BASE_URL=https://api.vectorengine.cn VGEN_API_KEY=sk-xxx node scripts/demo-drama.ts [workDir]
  *  流程：vgen_story → vgen_script → vgen_storyboard（提示词注入）→ vgen_generate target=final
  *       （角色三视图 + 场景主图 + 逐镜参考图 + 逐镜 i2v + say 配音 + ffmpeg 成片 + SRT）。
- *  消费全程记账；估价未知/超阈值时非 TTY 自动放行（打印 auto-confirm），交互终端逐笔询问。
+ *  消费全程记账；非交互须显式 VGEN_AUTO_CONFIRM=1 放行，交互终端逐笔询问。
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -44,16 +44,21 @@ async function main(): Promise<void> {
     console.error('用法: VGEN_BASE_URL=... VGEN_API_KEY=... node scripts/demo-drama.ts [workDir]')
     process.exit(2)
   }
+  const AUTO_CONFIRM = process.env['VGEN_AUTO_CONFIRM'] === '1'
+  // 非交互且未显式 opt-in → 拒绝并给出指引（修 M3b 遗留：非 TTY 一律自动确认过于激进）
+  if (!process.stdin.isTTY && !AUTO_CONFIRM) {
+    console.error('[demo] 非交互终端须显式 VGEN_AUTO_CONFIRM=1 才放行成本确认（预估花费见价目表）')
+    process.exit(2)
+  }
   const workDir = process.argv[2] ?? '.'
   const env = process.env
   const vault = VaultStore.open({ env: { ...env, DSH_HOME: workDir } })
   const runs = RunStore.open({ env: { ...env, DSH_HOME: workDir } })
   const channel = { id: 'vectorengine', baseUrl, apiKey }
 
-  const interactive = Boolean(process.stdin.isTTY)
   const confirmer = async (est: number | null): Promise<boolean> => {
-    if (!interactive) {
-      console.log(`[auto-confirm: non-tty] 预估 ${est ?? 'unknown'}`)
+    if (AUTO_CONFIRM) {
+      console.log(`[auto-confirm: VGEN_AUTO_CONFIRM=1] 预估 ${est ?? 'unknown'}`)
       return true
     }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
