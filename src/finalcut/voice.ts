@@ -1,4 +1,5 @@
 /** 配音：voiceFile 外挂优先（云 TTS/真人录音）；否则 macOS say / Windows SAPI 本地合成。 */
+// voiceFile 的存在性由调用方探测；SAPI 脚本必须写临时 .ps1 后用 powershell -File 执行（不得 -Command 内联，防引号剥离重开解析面）；say 的 text 以 - 开头时执行层需自行防护。
 
 export interface VoiceIntent {
   voiceFile?: string
