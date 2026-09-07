@@ -1,7 +1,7 @@
 // test/frames.test.ts
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { frameTimestamps, buildFrameArgs, extractReviewFrames } from '../src/review/frames.ts'
@@ -24,36 +24,48 @@ test('buildFrameArgs 产出确定性 ffmpeg 参数（-ss 在 -i 前，快速定�
 
 test('extractReviewFrames 抽 3 帧并返回路径（exec/probe 注入，零 ffmpeg 依赖）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-frames-'))
-  const calls: string[][] = []
-  const frames = await extractReviewFrames(join(dir, 'clip.mp4'), join(dir, 'out'), '/bin/ffmpeg', {
-    probe: async () => 8,
-    exec: async (_cmd, args) => {
-      calls.push(args)
-      const out = args[args.length - 1]!
-      writeFileSync(out, 'fake-png')
-    },
-  })
-  assert.equal(frames.length, 3)
-  assert.ok(frames.every((f) => existsSync(f)))
-  assert.deepEqual(calls[0]!.slice(1, 3), ['-ss', '2'])
-  assert.deepEqual(calls[2]!.slice(1, 3), ['-ss', '6'])
+  try {
+    const calls: string[][] = []
+    const frames = await extractReviewFrames(join(dir, 'clip.mp4'), join(dir, 'out'), '/bin/ffmpeg', {
+      probe: async () => 8,
+      exec: async (_cmd, args) => {
+        calls.push(args)
+        const out = args[args.length - 1]!
+        writeFileSync(out, 'fake-png')
+      },
+    })
+    assert.equal(frames.length, 3)
+    assert.ok(frames.every((f) => existsSync(f)))
+    assert.deepEqual(calls[0]!.slice(1, 3), ['-ss', '2'])
+    assert.deepEqual(calls[2]!.slice(1, 3), ['-ss', '6'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('extractReviewFrames probe 失败即抛（不产出半套帧）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-frames2-'))
-  await assert.rejects(
-    extractReviewFrames(join(dir, 'clip.mp4'), join(dir, 'out'), '/bin/ffmpeg', { probe: async () => null }),
-    /无法读取片段时长/,
-  )
+  try {
+    await assert.rejects(
+      extractReviewFrames(join(dir, 'clip.mp4'), join(dir, 'out'), '/bin/ffmpeg', { probe: async () => null }),
+      /无法读取片段时长/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('extractReviewFrames exec 未产出文件即抛', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-frames3-'))
-  await assert.rejects(
-    extractReviewFrames(join(dir, 'clip.mp4'), join(dir, 'out'), '/bin/ffmpeg', {
-      probe: async () => 8,
-      exec: async () => {}, // 不写文件
-    }),
-    /抽帧未产出/,
-  )
+  try {
+    await assert.rejects(
+      extractReviewFrames(join(dir, 'clip.mp4'), join(dir, 'out'), '/bin/ffmpeg', {
+        probe: async () => 8,
+        exec: async () => {}, // 不写文件
+      }),
+      /抽帧未产出/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

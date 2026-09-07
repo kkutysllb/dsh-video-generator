@@ -10,7 +10,8 @@ export type ExecRunner = (cmd: string, args: string[]) => Promise<void>
 
 function defaultExec(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err) => (err ? reject(err) : resolve()))
+    // killSignal 对齐 render-ffmpeg runOne：超时后 ffmpeg 偶发不响应 SIGTERM
+    execFile(cmd, args, { timeout: 60000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 }, (err) => (err ? reject(err) : resolve()))
   })
 }
 
