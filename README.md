@@ -2,6 +2,40 @@
 
 DSH 原生视频生成插件：短视频/AI 短剧/漫剧管线，竖屏 9:16 成片（mp4 + SRT）。用户自配 OpenAI 兼容通道（官方/中转皆可），零运行时依赖（Node ≥24，成片链路依赖本机 ffmpeg）。
 
+**DSH native video-generation plugin**: short-video / AI drama / comic-drama pipelines with 9:16 portrait output (mp4 + SRT). Bring your own OpenAI-compatible channel (official or relay). Zero runtime deps (Node ≥24; the final-cut stage needs local ffmpeg).
+
+## 安装 / Install
+
+```bash
+# npm registry（推荐：版本可被插件管理检测，用户手动更新）
+# npm registry (recommended: version detection with manual updates)
+dsh plugin --profile web add dsh-video-generator
+
+# GitHub 直装 / install straight from GitHub
+dsh plugin --profile web add github:kkutysllb/dsh-video-generator
+```
+
+装好后切换 Agent 预设「**漫剧导演**」即可开始（插件加载时自动安装预设；也可不切预设，
+直接在对话里说需求，能力通告会引导路由）。
+
+Switch to the **Comic-Drama Director** agent preset after install (auto-installed on
+plugin load) — or just state your request; the capability announcement routes it.
+
+环境要求 / Requirements：
+
+- Node ≥ 24；ffmpeg 须含 `drawtext` 滤镜（Homebrew 精简构建常见缺失——可用
+  `VGEN_FFMPEG` 指向完整构建，如 bilibili 客户端自带版）。
+  Node ≥ 24; ffmpeg must include the `drawtext` filter (set `VGEN_FFMPEG` if your
+  build lacks it).
+- 生成通道：任一 OpenAI 兼容端点或中转站（设置页「通道管理」填三要素即可）。
+  Any OpenAI-compatible endpoint or relay; configure it in the settings page.
+
+每个版本的变更说明（新增 / 变更 / 修复 / 删除 / 兼容性）见 [`release/`](release/)；
+`package.json` 的 `version` 是插件管理检测新版本的信号，更新由用户手动触发。
+
+Per-version changes live under [`release/`](release/); the `package.json` version
+drives update detection.
+
 ## 工作流（三段交接）
 
 会话模型自己产出结构化 JSON 并依次调用 `vgen_story → vgen_script → vgen_storyboard`（每步之后用 `vgen_status` 核对状态），之后接 `vgen_generate` 推进非 LLM 段（assets → video → final）。出错按错误信封 `error.code` 处置：`confirm-required` 转述成本后 `confirm:true` 重调；`gate-approval` 用户批准后 `gateApprovals` 重调；`manual-gate` 收用户文件走 `vgen_provide`。
@@ -62,3 +96,12 @@ npm run typecheck   # tsc 全量类型检查
 npm test            # node --test（Node 24 strip-types 直跑）
 npm run demo:mock   # 零 key mock 全链路 demo
 ```
+
+发布流程（bump 版本 → 写 release/vX.Y.Z.md → tag → push → npm publish）见
+[`release/README.md`](release/README.md) 的发版约定与 checklist；`prepack` 会在
+`npm publish` 前自动 build + typecheck + test。
+
+## License
+
+MIT
+

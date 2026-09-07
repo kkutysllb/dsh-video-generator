@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-generator",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "DSH 原生视频生成插件：短视频/短剧/漫剧管线，用户自配 OpenAI 兼容通道（官方/中转皆可）",
   "type": "module",
   "engines": {
@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "node --test --test-reporter tap \"test/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.all.json",
-    "demo:mock": "node scripts/demo-mock.ts"
+    "demo:mock": "node scripts/demo-mock.ts",
+    "prepack": "npm run build && npm run typecheck && npm test"
   },
   "main": "./lib/host/index.js",
   "exports": {
@@ -38,11 +39,14 @@
   "files": [
     "lib",
     "presets",
+    "release",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "license": "MIT"
 }
