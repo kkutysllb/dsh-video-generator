@@ -1,8 +1,10 @@
 /** DSH 插件入口：cordis 风格注册 webServer 路由（effect 生命周期管理）。 */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { createReadStream, existsSync, statSync } from 'node:fs'
-import { basename } from 'node:path'
+import { copyFileSync, createReadStream, existsSync, mkdirSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { VaultStore } from '../store/vault.ts'
 import { RunStore } from '../store/runs.ts'
 import { probeChannel } from '../probe.ts'
@@ -19,14 +21,17 @@ export const name = PLUGIN_ID
 /** cordis 依赖声明：这些服务就绪后才 apply（对齐 super-ppts 的模块级 inject 约定）。 */
 export const inject = ['webServer', 'tools', 'systemPrompt']
 
-/** Agent 能力通告：能力 + 三段交接工作流 + JSON 形状简例（不重复技能正文，避免上下文膨胀）。 */
-export const vgenGuidance = `本机已安装 dsh-video-generator 插件（短视频/短剧生成管线）。三段交接工作流：会话模型自己产出结构化 JSON 并依次调用 vgen_story → vgen_script → vgen_storyboard，之后接 vgen_generate（素材/成片生成，M3b 提供）。
-1) vgen_story 提交故事 JSON 开新 run：{ title, logline, style, characters: [{ id（^[a-z0-9_-]+$，≤48）, name, appearance }], chapters: [...] }，title ≤200、logline/appearance ≤500、characters ≤20、chapters ≤50（每条 ≤200）；
-2) vgen_script 提交剧本 JSON 挂到 runId：story 字段 + scenes: [{ id, name, description, characters: [id] }]、dialog: [{ sceneId, characterId, line }]，引用的 characterId/sceneId 必须存在，dialog ≤200 条；
-3) vgen_storyboard 提交分镜数组挂到 runId：每镜 { index（从 1 连续）, line（镜头台词）, prompt（手写画面描述）, characterIds: [id], sceneId?, camera?, durationSec 2..10, voiceHint? }，工具自动注入四层提示词（风格、运镜、角色锚、参考图提示）并落盘；
-未知 runId 报 not-found，缺字段/超限/引用错误报 bad-request（错误信封 { ok: false, error: { code, message } }）。
-4) vgen_generate 推进非 LLM 段：{ runId, target: 'assets'|'video'|'final', confirm? }——assets 出角色三视图/场景主图/逐镜参考图，video 逐镜图生视频，final 配音并渲染成片 mp4+SRT；首次调用不带 confirm，若返回 confirm-required（error.code），先向用户转述成本再携带 confirm:true 重调；
-5) vgen_status { runId } 随时查进度（各段状态 + 最近事件）。`
+/** Agent 能力通告：能力 + 三段交接工作流 + JSON 形状简例 + M4 工具面（不重复技能正文，避免上下文膨胀）。 */
+export const vgenGuidance = `本机已安装 dsh-video-generator 插件（短视频/短剧/漫剧生成管线，竖屏 9:16 成片 mp4+SRT）。三段交接工作流：会话模型自己产出结构化 JSON 并依次调用 vgen_story → vgen_script → vgen_storyboard，之后接 vgen_generate 推进非 LLM 段。
+1) vgen_story 提交故事 JSON 开新 run：{ title, logline, style, characters: [{ id（^[a-z0-9_-]+$，≤48）, name, appearance }], chapters: [...] }；
+2) vgen_script 提交剧本 JSON：scenes: [{ id, name, description, characters: [id] }]、dialog: [{ sceneId, characterId, line }]，引用必须存在；
+3) vgen_storyboard 提交分镜数组：每镜 { index（从 1 连续）, line, prompt, characterIds, sceneId?, camera?, durationSec 2..10, voiceHint? }，工具自动注入四层提示词；
+4) vgen_generate { runId, target: 'assets'|'video'|'final', confirm?, concurrency?, gates?, gateApprovals?, rerunStage? }：assets 出角色三视图/场景主图/逐镜参考图，video 逐镜图生视频，final 配音并渲染成片。首次不带 confirm；返回 confirm-required（error.code）→ 向用户转述成本后 confirm:true 重调；gate-approval → 用户批准后 gateApprovals:["段名"] 重调；manual-gate → 收用户文件走 vgen_provide；重做某段 → rerunStage（媒体段重置 pending）；
+5) vgen_status { runId }：进度 + gates + reviews + 最近事件；
+6) vgen_review { runId, shot, score?, negativeHint?, confirm? } 质量闭环：不带 score → 返回成片 25/50/75% 三帧路径（用读图工具逐帧查看后评分）；带 score 1-5 → ≥3 记通过；≤2 自动追加负面词重拍（每镜 ≤2 次，重拍花费同 confirm 语义），重拍后返回新帧继续评；
+7) vgen_provide { runId, stage, files: [{ path, shot?, name? }] }：manual gate 产物注入（master-asset 文件名 char-*/scene-*；shot-assets/video 逐镜 shot 号，video 须全镜覆盖且时长≥0.5s；final-cut 首文件 .mp4 注入后 run 直接 done）；
+8) vgen_channels { action: 'list'|'health'|'spend' }：通道面板（脱敏列表/探测健康+估价/累计消耗）。
+用户通道在 Web 设置页「视频工坊」管理（三要素自配，官方/中转皆可）。注意：happyhorse 等免费档视频模型可能带平台水印，介意请提醒用户换付费模型。错误信封 { ok: false, error: { code, message } }；未知 runId = not-found。`
 
 
 interface WebServerFace {
@@ -62,7 +67,36 @@ function registerHandoffTools(ctx: HostContext, handoff: HandoffTools): Array<()
   return handoffToolDefs(handoff).map((def) => ctx.tools.register(def))
 }
 
+/** 包根：lib/host/index.js（构建产物）与 src/host/index.ts（测试直跑）上溯两级均为包根。 */
+function packageRoot(): string {
+  return fileURLToPath(new URL('../../', import.meta.url))
+}
+
+/** 预设安装（super-ppts 模式，幂等）：写 ~/.dsh 与 ~/.kcoder 双候选目录
+ *  （宿主品牌 home 分叉期的双保险），任一失败静默——预设缺失不阻断插件加载。 */
+function ensurePresetInstalled(): void {
+  try {
+    const src = resolve(packageRoot(), 'presets')
+    if (!existsSync(src)) return
+    for (const base of ['.dsh', '.kcoder']) {
+      try {
+        const dest = join(homedir(), base, '.agent-presets', 'dsh-video-generator')
+        mkdirSync(dest, { recursive: true })
+        for (const f of ['preset.yml', 'agent.cordis.yml']) {
+          const p = join(src, f)
+          if (existsSync(p)) copyFileSync(p, join(dest, f))
+        }
+      } catch {
+        // 单目录失败不影响另一目录
+      }
+    }
+  } catch {
+    // 预设安装失败不阻断插件加载
+  }
+}
+
 export function apply(ctx: HostContext): () => void {
+  ensurePresetInstalled()
   const vault = VaultStore.open({ env: process.env })
   const runs = RunStore.open({ env: process.env })
   const web = ctx.webServer

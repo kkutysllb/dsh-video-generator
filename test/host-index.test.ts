@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
@@ -415,5 +415,30 @@ test('runs prefix：列表免围栏、未知 run 详情 404、非两段路径 40
     assert.equal(forbidden.statusCode, 403)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: apply 安装预设到 ~/.dsh 与 ~/.kcoder 的 .agent-presets（幂等）', () => {
+  const home = mkdtempSync(join(tmpdir(), 'vgen-home-'))
+  const prev = process.env['HOME']
+  process.env['HOME'] = home
+  try {
+    // 真实调用 apply()（wire 装置内部）触发 ensurePresetInstalled；
+    // DSH_HOME 一并落 home → vault/runs 同步隔离，不触真实用户目录。
+    wire({ DSH_HOME: home })
+    for (const base of ['.dsh', '.kcoder']) {
+      assert.ok(existsSync(join(home, base, '.agent-presets', 'dsh-video-generator', 'preset.yml')), `缺 ${base} 预设`)
+      assert.ok(
+        existsSync(join(home, base, '.agent-presets', 'dsh-video-generator', 'agent.cordis.yml')),
+        `缺 ${base} agent.cordis.yml`,
+      )
+    }
+    // 幂等：再次 apply 不炸、文件仍在
+    wire({ DSH_HOME: home })
+    assert.ok(existsSync(join(home, '.dsh', '.agent-presets', 'dsh-video-generator', 'preset.yml')))
+  } finally {
+    if (prev === undefined) delete process.env['HOME']
+    else process.env['HOME'] = prev
+    rmSync(home, { recursive: true, force: true })
   }
 })
