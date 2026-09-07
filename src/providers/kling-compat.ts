@@ -35,7 +35,7 @@ export function createKlingCompatProvider(ch: KlingCompatChannel, fetchImpl: typ
   const base = ch.baseUrl.trim().replace(/\/+$/, '')
   const provider: Provider = {
     id: `kling-compat:${ch.model}`,
-    capabilities: { textToVideo: true, imageToVideo: true, maxDurationSec: 10, qualityTier: 6 },
+    capabilities: { textToVideo: true, imageToVideo: false, maxDurationSec: 10, qualityTier: 6 },
     async quote(_stage) {
       const est = ch.estimate?.(ch.model) ?? null
       return { qualityTier: 6, costEstimate: est ?? 0, currency: 'CNY' }

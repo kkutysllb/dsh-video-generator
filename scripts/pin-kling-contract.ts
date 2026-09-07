@@ -21,6 +21,7 @@ async function main(): Promise<void> {
     } catch (err) {
       const status = (err as { status?: number }).status ?? 0
       if (status === 429 || status === 503 || status === 0) {
+        if (attempt === 5) break // 末次失败直接走 jobId 判空退出，不再空睡
         const delay = 60000 * 2 ** (attempt - 1)
         console.log(`提交失败(status=${status})，${delay / 1000}s 后重试 ${attempt}/5`)
         await new Promise((r) => setTimeout(r, delay))
