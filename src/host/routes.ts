@@ -173,8 +173,11 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
       const merged = new Map(ch.models.map((m) => [m.model, m]))
       for (const n of names) {
         if (typeof n !== 'string' || !n) throw new VaultError('bad-request', `非法模型名: ${String(n)}`)
-        const { entry } = resolveModel(n)
-        merged.set(n, { model: n, kind: entry.kind })
+        const { entry, source } = resolveModel(n)
+        // 目录不认识的名字（unknown 缺省 kind=video）不得覆盖用户已配置的既有条目：
+        // 中转站枚举导入动辄数百模型，盲覆盖会把用户手工设好的 image/tts kind 全刷成 video
+        const existing = merged.get(n)
+        merged.set(n, source === 'unknown' && existing ? existing : { model: n, kind: entry.kind })
       }
       return ctx.vault.updateChannel(cid, { models: [...merged.values()] })
     }

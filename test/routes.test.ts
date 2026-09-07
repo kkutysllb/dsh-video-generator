@@ -247,6 +247,19 @@ test('M4: channels.adoptModels 用内置目录推断 kind 并合并去重', () =
   }
 })
 
+test('M4: channels.adoptModels 重报目录不认识的名字不刷掉既有 kind（unknown 缺省 video 盲覆盖回归）', () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 'adopt-u', baseUrl: 'https://api.example.com', apiKey: 'sk-1234567890ab', models: [{ model: 'gpt-x', kind: 'image' }] })
+    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-u', models: ['gpt-x'] }) as { ok: true; value: { models: Array<{ model: string; kind: string }> } }
+    assert.equal(env.ok, true)
+    assert.equal(env.value.models.length, 1)
+    assert.equal(env.value.models[0]?.kind, 'image') // 修复前会被 unknownEntry() 刷成 'video'
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
 test('M4: channels.adoptModels 响应不含明文 key', () => {
   const c = ctx()
   try {
