@@ -1,6 +1,7 @@
 /** M2 出口验证：单镜图生视频真机出片。
  *  用法: VGEN_BASE_URL=... VGEN_API_KEY=... node scripts/demo-single-shot.ts [workDir]
  *  流程：seedream-4.0 文生图 → URL → happyhorse-1.1-i2v 图生视频 → 轮询 SUCCEEDED → 下载 mp4。
+ *  通道契约：VGEN_BASE_URL 传站点根（如 https://api.vectorengine.cn）。
  *  消费全程记账；估价未知或超阈值时经终端确认（规格 §4.4）。
  */
 
@@ -58,14 +59,11 @@ async function main(): Promise<void> {
     process.exit(2)
   }
   const channel = { id: 'vectorengine', baseUrl, apiKey }
-  // pricing 在站点根 /api/pricing（无 /v1 前缀）。
-  const siteRoot = baseUrl.replace(/\/v1\/?$/, '')
-  // 本站拓扑（实测）：OpenAI 兼容端点挂 /v1 前缀；DashScope 原生(/alibailian)与 kling-compat 挂站点根。
-  // 适配器路径已含族前缀，故视频通道用去掉 /v1 的站点根，图像通道保留 /v1。
-  const channelRoot = { ...channel, baseUrl: siteRoot }
+  // 拓扑契约（附录 B.3）：通道 baseUrl = 站点根。图像端点的 /v1 前缀由 openai-images 适配器内部拼接；
+  // DashScope(/alibailian) 与 kling-compat 路径本就挂站点根；fetchPricing 自行归一尾缀 /v1。
   const workDir = process.argv[2] ?? '.'
   mkdirSync(workDir, { recursive: true })
-  const pricing = await fetchPricing({ baseUrl: siteRoot, apiKey })
+  const pricing = await fetchPricing({ baseUrl, apiKey })
   const ledger = SpendLedger.open()
   const runs = RunStore.open()
   const run = runs.create('单镜图生视频')
@@ -88,7 +86,7 @@ async function main(): Promise<void> {
   const videoEst = estimateCny(VIDEO_MODEL, pricing)
   if (!confirmSpend(videoEst, 1, (est) => askConfirm(`视频预估成本 ${est}，继续？`))) throw new Error('用户取消')
   runs.setStage(run.id, 'video', 'running')
-  const videoProvider = providerForModel(channelRoot, VIDEO_MODEL)
+  const videoProvider = providerForModel(channel, VIDEO_MODEL)
   console.log('[video] submitting task...')
   const { jobId: videoJob } = await videoProvider.submit('video', { prompt: '鲸鱼跃出海面溅起水花，镜头缓慢推进，电影感光影', imageUrl: imgUrl, durationSec: 5 })
   console.log(`[video] taskId=${videoJob}`)

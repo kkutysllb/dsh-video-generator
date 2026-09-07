@@ -1,4 +1,4 @@
-/** M2 实钉：kling-compat 成功信封。用法: VGEN_BASE_URL=... VGEN_API_KEY=... node scripts/pin-kling-contract.ts [model]
+/** M2 实钉：kling-compat 成功信封。用法: VGEN_BASE_URL=https://api.vectorengine.cn（站点根） VGEN_API_KEY=... node scripts/pin-kling-contract.ts [model]
  *  上游饱和（429/503）时指数退避重试最多 5 次（60s 起）。key 只从环境变量读取。
  */
 import { createKlingCompatProvider } from '../src/providers/kling-compat.ts'

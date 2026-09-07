@@ -27,3 +27,13 @@ test('estimateCny：按次模型返回 model_price；按量模型返回 null（�
   assert.equal(estimateCny('gpt-4o-mini', p), null)
   assert.equal(estimateCny('no-such', p), null)
 })
+
+test('fetchPricing 归一尾缀 /v1（用户习惯性粘贴 /v1 不静默 404）', async () => {
+  let seenUrl = ''
+  const spy = (async (url: unknown) => {
+    seenUrl = String(url)
+    return new Response(JSON.stringify(SAMPLE), { status: 200 })
+  }) as unknown as typeof fetch
+  await fetchPricing({ baseUrl: 'https://x.example/v1', apiKey: 'sk-test-123456' }, spy)
+  assert.equal(seenUrl, 'https://x.example/api/pricing')
+})

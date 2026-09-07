@@ -14,7 +14,9 @@ export type PricingTable = Map<string, PricingRow>
 
 export async function fetchPricing(target: { baseUrl: string; apiKey: string }, fetchImpl: typeof fetch = fetch, timeoutMs = 15000): Promise<PricingTable> {
   const base = target.baseUrl.trim().replace(/\/+$/, '')
-  const json = await getJson<{ data?: PricingRow[] }>(`${base}/api/pricing`, target.apiKey, fetchImpl, timeoutMs)
+  // 归一：习惯性粘贴 /v1 结尾不静默 404
+  const root = base.replace(/\/v1$/, '')
+  const json = await getJson<{ data?: PricingRow[] }>(`${root}/api/pricing`, target.apiKey, fetchImpl, timeoutMs)
   const table: PricingTable = new Map()
   for (const row of json?.data ?? []) {
     if (typeof row?.model_name === 'string') table.set(row.model_name, row)

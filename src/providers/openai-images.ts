@@ -31,7 +31,8 @@ export function createOpenaiImagesProvider(ch: ImageChannel, fetchImpl: typeof f
       const body: Record<string, unknown> = { model: ch.model, n: 1 }
       if (prompt) body['prompt'] = prompt
       if (typeof spec['size'] === 'string') body['size'] = spec['size']
-      const json = await postJson<ImagesResponse>(`${base}/images/generations`, ch.apiKey, body, fetchImpl)
+      // 拓扑契约（附录 B.3）：通道 baseUrl = 站点根；OpenAI 兼容端点固定挂 /v1。其他站点拓扑不同时走 channel 覆盖（backlog）。
+      const json = await postJson<ImagesResponse>(`${base}/v1/images/generations`, ch.apiKey, body, fetchImpl)
       const url = json.data?.[0]?.url
       if (!url) throw new RelayError(500, '图像响应缺少 data[0].url')
       return { jobId: url }
