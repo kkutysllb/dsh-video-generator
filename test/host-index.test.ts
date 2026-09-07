@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/host/index.ts'
 import type { IncomingMessage } from 'node:http'
+import type { DshToolDefinition } from '../src/tools/handoff.ts'
 
 interface RegisteredRoute {
   kind: string
@@ -43,11 +44,31 @@ function wire(env: NodeJS.ProcessEnv) {
 
   const routes = new Map<string, RegisteredRoute>()
   const effects: string[] = []
+  const registeredTools: DshToolDefinition[] = []
+  const sections: Array<{ name: string; order: number; text: string }> = []
+  const disposers: Array<() => void> = []
   const ctx = {
     inject: undefined,
     webServer: {
       register(route: RegisteredRoute) {
         routes.set(route.path, route)
+        return () => {}
+      },
+    },
+    tools: {
+      register(def: DshToolDefinition) {
+        registeredTools.push(def)
+        const d = () => {
+          const i = registeredTools.indexOf(def)
+          if (i >= 0) registeredTools.splice(i, 1)
+        }
+        disposers.push(d)
+        return d
+      },
+    },
+    systemPrompt: {
+      section(spec: { name: string; order: number; text: string }) {
+        sections.push(spec)
         return () => {}
       },
     },
@@ -57,11 +78,11 @@ function wire(env: NodeJS.ProcessEnv) {
       return () => {}
     },
   } as unknown as Parameters<typeof apply>[0]
-  apply(ctx)
+  const dispose = apply(ctx)
 
   if (prevHome === undefined) delete process.env['DSH_HOME']
   else process.env['DSH_HOME'] = prevHome
-  return { routes, effects }
+  return { routes, effects, registeredTools, sections, dispose, disposers }
 }
 
 function findApi(routes: Map<string, RegisteredRoute>): RegisteredRoute {
@@ -80,6 +101,27 @@ test('apply 注册三条路由并经 effect 管理', () => {
       '/dsh-video-generator/runs',
     ])
     assert.equal(effects.length, 3)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('apply 注册三交接工具与 systemPrompt 通告；disposer 回收', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-wire-'))
+  try {
+    const w = wire({ DSH_HOME: dir })
+    assert.deepEqual(
+      [...w.registeredTools].map((d) => d.name).sort(),
+      ['vgen_script', 'vgen_story', 'vgen_storyboard'],
+    )
+    assert.ok(w.registeredTools.every((d) => typeof d.execute === 'function' && d.parameters && d.output?.render))
+    assert.deepEqual(
+      [...w.sections].map((s) => s.name),
+      ['plugin:dsh-video-generator'],
+    )
+    // 登记 disposer：先逆向回收工具，工具名清空
+    for (const d of w.disposers) d()
+    assert.equal(w.registeredTools.length, 0)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
