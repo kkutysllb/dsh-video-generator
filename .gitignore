@@ -1,5 +1,7 @@
 node_modules/
-lib/
+# lib/ 是 tsc 构建产物——但 lib/client.js 例外：手写自注册 bundle（非构建产物，必须纳管）
+lib/*
+!lib/client.js
 *.tsbuildinfo
 .DS_Store
 .pnpm-store/
