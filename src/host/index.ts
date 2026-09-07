@@ -6,6 +6,9 @@ import { RunStore } from '../store/runs.ts'
 import { probeChannel } from '../probe.ts'
 import { buildHandoffTools, handoffToolDefs, type HandoffTools, type DshToolDefinition } from '../tools/handoff.ts'
 import { buildGenerateTools, generateToolDefs } from '../tools/generate.ts'
+import { buildProvideTools, provideToolDefs } from '../tools/provide.ts'
+import { buildReviewTools, reviewToolDefs } from '../tools/review.ts'
+import type { ChannelRef } from '../registry.ts'
 import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest } from './routes.ts'
 
 export const name = PLUGIN_ID
@@ -71,16 +74,22 @@ export function apply(ctx: HostContext): () => void {
   }
   // 原生工具：直接注册（super-ppts 模式，不用回调式 inject）。
   const handoff = buildHandoffTools({ vault, runs })
-  const generateTools = buildGenerateTools({
-    vault, runs,
-    channel: () => {
-      const d = vault.load().defaultChannelId
-      const c = d ? vault.getChannel(d) : null
-      if (!c) throw new Error('未配置生成通道：请先在设置页「通道管理」添加通道')
-      return { id: c.id, baseUrl: c.baseUrl, apiKey: c.apiKey }
-    },
-  })
-  for (const dispose of [...registerHandoffTools(ctx, handoff), ...generateToolDefs(generateTools).map((def) => ctx.tools.register(def))]) {
+  // 默认通道解析：generate 与 review 共用（按当前 defaultChannelId 现取，切通道即时生效）。
+  const resolveChannel = (): ChannelRef => {
+    const d = vault.load().defaultChannelId
+    const c = d ? vault.getChannel(d) : null
+    if (!c) throw new Error('未配置生成通道：请先在设置页「通道管理」添加通道')
+    return { id: c.id, baseUrl: c.baseUrl, apiKey: c.apiKey }
+  }
+  const generateTools = buildGenerateTools({ vault, runs, channel: resolveChannel })
+  const provideTools = buildProvideTools({ runs, env: process.env })
+  const reviewTools = buildReviewTools({ vault, runs, channel: resolveChannel })
+  for (const dispose of [
+    ...registerHandoffTools(ctx, handoff),
+    ...generateToolDefs(generateTools).map((def) => ctx.tools.register(def)),
+    ...provideToolDefs(provideTools).map((def) => ctx.tools.register(def)),
+    ...reviewToolDefs(reviewTools).map((def) => ctx.tools.register(def)),
+  ]) {
     disposers.push(dispose)
   }
 

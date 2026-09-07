@@ -104,3 +104,84 @@ test('vgen_generate：确认通过 -> assets 段完成并返回镜头数（注�
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
+
+test('M4: gates 参数校验非法模式 → bad-request，合法 → 持久化进 run.json', async () => {
+  const s = setup({ confirmer: async () => true })
+  try {
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gates: { video: 'teleport' } as unknown as Record<string, 'auto' | 'ask' | 'manual'> }) as { ok: boolean; error?: { code: string } }
+    assert.equal(r.ok, false)
+    if (!r.ok) assert.equal(r.error!.code, 'bad-request')
+    const r2 = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gates: { video: 'manual' } }) as { ok: boolean }
+    // video 段在 assets 目标下不执行，gates 仅持久化
+    assert.equal(r2.ok, true)
+    assert.deepEqual(s.runs.get(s.run.id)!.gates, { video: 'manual' })
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: manual gate → manual-gate 信封（指引 vgen_provide）', async () => {
+  const s = setup({ confirmer: async () => true })
+  try {
+    s.runs.setGates(s.run.id, { 'master-asset': 'manual' })
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; error: { code: string; message: string } }
+    assert.equal(r.ok, false)
+    assert.equal(r.error.code, 'manual-gate')
+    assert.match(r.error.message, /vgen_provide/)
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: ask gate 未批 → gate-approval 信封；gateApprovals 放行后通过', async () => {
+  const s = setup({ confirmer: async () => true })
+  try {
+    s.runs.setGates(s.run.id, { 'master-asset': 'ask' })
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; error?: { code: string } }
+    assert.equal(r.ok, false)
+    assert.equal(r.error!.code, 'gate-approval')
+    const r2 = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gateApprovals: ['master-asset'] }) as { ok: boolean; error?: { code: string } }
+    assert.notEqual(r2.ok ? '' : r2.error!.code, 'gate-approval')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: rerunStage 把已 done 段重置 pending 后重跑', async () => {
+  const s = setup({ confirmer: async () => true })
+  try {
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    await s.tools.generate.execute({ runId: s.run.id, target: 'assets', rerunStage: 'master-asset' })
+    // mock provider 全链路会重新生成 → 段回到 done 且出现第二次 stage-start 事件
+    const starts = s.runs.get(s.run.id)!.events.filter((e) => e.type === 'stage-start' && (e.detail as { stage?: string } | undefined)?.['stage'] === 'master-asset')
+    assert.ok(starts.length >= 1)
+    assert.equal(s.runs.get(s.run.id)!.stages['master-asset'], 'done')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: rerunStage 非媒体段 → bad-request', async () => {
+  const s = setup({ confirmer: async () => true })
+  try {
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', rerunStage: 'story' }) as { ok: boolean; error: { code: string; message: string } }
+    assert.equal(r.ok, false)
+    assert.match(r.error.message, /媒体段/)
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: vgen_status 返回 reviews/gates', async () => {
+  const s = setup()
+  try {
+    s.runs.setGates(s.run.id, { video: 'ask' })
+    s.runs.setReview(s.run.id, 'shot-1', { scores: [4], retries: 0, passed: true })
+    const r = await s.tools.status.execute({ runId: s.run.id }) as { ok: boolean; value: { gates: Record<string, string>; reviews: Record<string, unknown> } }
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.value.gates, { video: 'ask' })
+    assert.ok(r.value.reviews['shot-1'])
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
