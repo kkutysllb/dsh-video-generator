@@ -7,6 +7,9 @@ import type { VaultStore } from '../store/vault.ts'
 import { VaultError } from '../store/vault.ts'
 import type { RunStore } from '../store/runs.ts'
 import type { probeChannel } from '../probe.ts'
+import { collectArtifacts } from './artifacts.ts'
+import { resolveModel } from '../model-catalog.ts'
+import { isStage } from '../stages.ts'
 
 export const PLUGIN_ID = 'dsh-video-generator'
 export const PLUGIN_VERSION = '0.1.0'
@@ -147,6 +150,34 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
     }
     case 'runs.list':
       return { runs: ctx.runs.list() }
+    case 'runs.get': {
+      const rid = requireString(args['id'], 'id')
+      const record = ctx.runs.get(rid)
+      if (!record) throw new VaultError('not-found', `run 不存在: ${rid}`)
+      let entries = 0
+      let estCny = 0
+      for (const e of record.events) {
+        if (e.type !== 'spend') continue
+        entries++
+        const v = e.detail?.['estCny']
+        if (typeof v === 'number' && Number.isFinite(v)) estCny += v
+      }
+      return { record, artifacts: collectArtifacts(ctx.runs, rid), spend: { entries, estCny: Number(estCny.toFixed(4)) } }
+    }
+    case 'channels.adoptModels': {
+      const cid = requireString(args['id'], 'id')
+      const ch = ctx.vault.getChannel(cid)
+      if (!ch) throw new VaultError('not-found', `通道不存在: ${cid}`)
+      const names = args['models']
+      if (!Array.isArray(names) || names.length === 0 || names.length > 100) throw new VaultError('bad-request', 'models 须为 1..100 字符串数组')
+      const merged = new Map(ch.models.map((m) => [m.model, m]))
+      for (const n of names) {
+        if (typeof n !== 'string' || !n) throw new VaultError('bad-request', `非法模型名: ${String(n)}`)
+        const { entry } = resolveModel(n)
+        merged.set(n, { model: n, kind: entry.kind })
+      }
+      return ctx.vault.updateChannel(cid, { models: [...merged.values()] })
+    }
     case 'settings.get': {
       const d = ctx.vault.load()
       return { defaultChannelId: d.defaultChannelId, budget: d.budget, gateDefaults: d.gateDefaults }
@@ -157,6 +188,15 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
       if (t !== undefined) {
         if (typeof t !== 'number' || !Number.isFinite(t)) throw new VaultError('bad-request', 'confirmThresholdCny 须为数字')
         ctx.vault.setBudget(t)
+      }
+      const gd = args['gateDefaults']
+      if (gd !== undefined) {
+        if (typeof gd !== 'object' || gd === null || Array.isArray(gd)) throw new VaultError('bad-request', 'gateDefaults 须为对象 {段名: auto|ask|manual}')
+        for (const [k, v] of Object.entries(gd as Record<string, unknown>)) {
+          if (!isStage(k)) throw new VaultError('bad-request', `gateDefaults 键须为合法段名: ${k}`)
+          if (v !== 'auto' && v !== 'ask' && v !== 'manual') throw new VaultError('bad-request', `gateDefaults[${k}] 须为 auto|ask|manual`)
+          ctx.vault.setGateDefault(k, v)
+        }
       }
       const d = ctx.vault.load()
       return { budget: d.budget, gateDefaults: d.gateDefaults }

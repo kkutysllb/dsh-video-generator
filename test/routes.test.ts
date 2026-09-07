@@ -213,3 +213,64 @@ test('同步内部错误不泄漏细节', () => {
     rmSync(c.dir, { recursive: true, force: true })
   }
 })
+
+test('M4: runs.get 返回 record+artifacts+spend 聚合；未知 id → not-found 信封', () => {
+  const c = ctx()
+  try {
+    const run = c.runs.create('路由 run')
+    c.runs.appendEvent(run.id, 'spend', { estCny: 0.5 })
+    const env = handleApi(c.api, 'runs.get', { id: run.id }) as { ok: true; value: { record: { id: string }; spend: { estCny: number } } }
+    assert.equal(env.ok, true)
+    assert.equal(env.value.record.id, run.id)
+    assert.equal(env.value.spend.estCny, 0.5)
+    const miss = handleApi(c.api, 'runs.get', { id: 'run-nope' }) as { ok: false; error: { code: string } }
+    assert.equal(miss.ok, false)
+    assert.equal(miss.error.code, 'not-found')
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: channels.adoptModels 用内置目录推断 kind 并合并去重', () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 'adopt-a', baseUrl: 'https://api.example.com', apiKey: 'sk-1234567890ab', models: [{ model: 'gpt-x', kind: 'image' }] })
+    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-a', models: ['happyhorse-1.1-i2v', 'seedream-4.0'] }) as { ok: true; value: { models: Array<{ model: string; kind: string }> } }
+    assert.equal(env.ok, true)
+    const kinds = Object.fromEntries(env.value.models.map((m) => [m.model, m.kind]))
+    assert.equal(kinds['happyhorse-1.1-i2v'], 'video')
+    assert.equal(kinds['seedream-4.0'], 'image')
+    assert.equal(kinds['gpt-x'], 'image') // 未重报的既有模型原样保留
+    assert.equal(env.value.models.length, 3) // 合并去重
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: channels.adoptModels 响应不含明文 key', () => {
+  const c = ctx()
+  try {
+    handleApi(c.api, 'channels.create', { id: 'adopt-b', baseUrl: 'https://api.example.com', apiKey: 'sk-secret-abcdef999' })
+    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-b', models: ['wan2.5-i2v'] })
+    assert.ok(!JSON.stringify(env).includes('sk-secret-abcdef999'))
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: settings.update gateDefaults 校验段名与模式', () => {
+  const c = ctx()
+  try {
+    const bad = handleApi(c.api, 'settings.update', { gateDefaults: { teleport: 'auto' } }) as { ok: false; error: { code: string } }
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error.code, 'bad-request')
+    const bad2 = handleApi(c.api, 'settings.update', { gateDefaults: { video: 'slow' } }) as { ok: false; error: { code: string } }
+    assert.equal(bad2.ok, false)
+    assert.equal(bad2.error.code, 'bad-request')
+    const good = handleApi(c.api, 'settings.update', { gateDefaults: { video: 'ask' } }) as { ok: true; value: { gateDefaults: Record<string, string> } }
+    assert.equal(good.ok, true)
+    assert.equal(good.value.gateDefaults['video'], 'ask')
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})

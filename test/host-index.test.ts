@@ -112,7 +112,7 @@ test('apply 注册三交接工具与 systemPrompt 通告；disposer 回收', () 
     const w = wire({ DSH_HOME: dir })
     assert.deepEqual(
       [...w.registeredTools].map((d) => d.name).sort(),
-      ['vgen_generate', 'vgen_provide', 'vgen_review', 'vgen_script', 'vgen_status', 'vgen_story', 'vgen_storyboard'],
+      ['vgen_channels', 'vgen_generate', 'vgen_provide', 'vgen_review', 'vgen_script', 'vgen_status', 'vgen_story', 'vgen_storyboard'],
     )
     assert.ok(w.registeredTools.every((d) => typeof d.execute === 'function' && d.parameters && d.output?.render))
     assert.deepEqual(

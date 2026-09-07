@@ -8,6 +8,7 @@ import { buildHandoffTools, handoffToolDefs, type HandoffTools, type DshToolDefi
 import { buildGenerateTools, generateToolDefs } from '../tools/generate.ts'
 import { buildProvideTools, provideToolDefs } from '../tools/provide.ts'
 import { buildReviewTools, reviewToolDefs } from '../tools/review.ts'
+import { buildChannelsTools, channelsToolDefs } from '../tools/channels.ts'
 import type { ChannelRef } from '../registry.ts'
 import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest } from './routes.ts'
 
@@ -84,11 +85,13 @@ export function apply(ctx: HostContext): () => void {
   const generateTools = buildGenerateTools({ vault, runs, channel: resolveChannel })
   const provideTools = buildProvideTools({ runs, env: process.env })
   const reviewTools = buildReviewTools({ vault, runs, channel: resolveChannel })
+  const channelsTools = buildChannelsTools({ vault, runs })
   for (const dispose of [
     ...registerHandoffTools(ctx, handoff),
     ...generateToolDefs(generateTools).map((def) => ctx.tools.register(def)),
     ...provideToolDefs(provideTools).map((def) => ctx.tools.register(def)),
     ...reviewToolDefs(reviewTools).map((def) => ctx.tools.register(def)),
+    ...channelsToolDefs(channelsTools).map((def) => ctx.tools.register(def)),
   ]) {
     disposers.push(dispose)
   }
