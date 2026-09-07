@@ -1,0 +1,38 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { createKlingCompatProvider } from '../src/providers/kling-compat.ts'
+import { assertProvider } from '../src/provider.ts'
+
+function klingFetch(): typeof fetch {
+  let polls = 0
+  return (async (url: unknown) => {
+    const u = String(url)
+    if (u.endsWith('/videos/text2video')) {
+      return new Response(JSON.stringify({ code: 0, data: { task_id: 'kling-task-1', task_status: 'submitted' } }), { status: 200 })
+    }
+    if (u.includes('/videos/text2video/')) {
+      polls++
+      const status = polls >= 2 ? 'succeed' : 'processing'
+      return new Response(JSON.stringify({
+        code: 0,
+        data: {
+          task_id: 'kling-task-1',
+          task_status: status,
+          ...(status === 'succeed' ? { task_result: { videos: [{ url: 'https://kling.example/v.mp4' }] } } : {}),
+        },
+      }), { status: 200 })
+    }
+    return new Response('not found', { status: 404 })
+  }) as unknown as typeof fetch
+}
+
+test('kling-compat：text2video 提交/轮询/取片', async () => {
+  const p = assertProvider(createKlingCompatProvider({ baseUrl: 'https://x.example/v1', apiKey: 'sk-test-123456', model: 'kling-video' }, klingFetch()))
+  assert.equal(p.id, 'kling-compat:kling-video')
+  const { jobId } = await p.submit('video', { prompt: 'whale', durationSec: 5 })
+  assert.equal(jobId, 'kling-task-1')
+  assert.equal((await p.status(jobId)).state, 'running')
+  const done = await p.status(jobId)
+  assert.equal(done.state, 'done')
+  assert.deepEqual((await p.fetch(jobId)).outputs, ['https://kling.example/v.mp4'])
+})
