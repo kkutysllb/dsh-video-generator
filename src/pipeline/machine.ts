@@ -1,4 +1,7 @@
-/** 七段流水线状态机：run.json 事实源推进 + 断点续跑 + gate(auto/ask/manual) + 并发泵 + 记账（规格 §5）。 */
+/** 七段流水线状态机：run.json 事实源推进 + 断点续跑 + gate(auto/ask/manual) + 并发泵 + 记账（规格 §5）。
+ *  已知限制：断点续跑从事件流恢复的 shot 参考图为签名 URL（7 天有效）；过期导致 video 段失败时，
+ *  将 run.json 中 shot-assets 段状态改回 pending 重推即可重新生成。
+ */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
@@ -60,14 +63,21 @@ async function saveUrl(fetchImpl: typeof fetch, url: string, file: string): Prom
   writeFileSync(file, Buffer.from(await res.arrayBuffer()), { mode: 0o600 })
 }
 
-/** 简单并发泵：按 index 顺序发起，至多 limit 个在飞。 */
+/** 简单并发泵：按 index 顺序发起，至多 limit 个在飞；任一失败即熔断（在飞任务自然完成，不再取新任务）。 */
 async function pump<T>(items: T[], limit: number, worker: (item: T, index: number) => Promise<void>): Promise<void> {
   let next = 0
+  let stopped = false
   const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
     for (;;) {
+      if (stopped) return
       const i = next++
       if (i >= items.length) return
-      await worker(items[i]!, i)
+      try {
+        await worker(items[i]!, i)
+      } catch (err) {
+        stopped = true
+        throw err
+      }
     }
   })
   await Promise.all(runners)
@@ -116,7 +126,8 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
     const mode = gates[stage] ?? 'auto'
     if (mode === 'manual') throw new Error(`段 ${stage} 为 manual 模式：请先在会话中提供该段产物（文件/JSON）后再推进`)
     if (mode === 'ask') {
-      const ok = await deps.ask?.(stage, info)
+      if (!deps.ask) throw new Error(`段 ${stage} 需要审批，但未提供 ask 通道`)
+      const ok = await deps.ask(stage, info)
       if (ok !== true) throw new Error(`段 ${stage} 在 ask 审批中被拒绝`)
     }
   }
@@ -312,6 +323,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           } else if (voice?.kind === 'file') {
             audio = voice.src
             audioDurUs = Math.round(((await probeDurationSec(voice.src, deps.ffmpeg)) ?? 0) * 1e6)
+          } else {
+            // 无配音（voiceHint/voiceFile 均缺）：字幕保留 line，事件透明化
+            runs.appendEvent(runId, 'tts-skip', { shot: shot.index })
           }
           const subtitle = shot.voiceHint ?? shot.line ?? ''
           timelineShots.push({

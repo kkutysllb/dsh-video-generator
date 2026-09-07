@@ -78,6 +78,86 @@ test('advanceRun assets+video：三视图/场景/参考图/克隆下载落盘，
   }
 })
 
+test('pump 失败熔断：首镜失败后不再 submit 后续镜头（旧实现会打满 5 次）', async () => {
+  const s = setup()
+  try {
+    const fiveShots = {
+      characters: SCRIPT.characters,
+      scenes: SCRIPT.scenes,
+      shots: Array.from({ length: 5 }, (_, i) => ({
+        index: i + 1, line: `镜头${i + 1}`, prompt: `画面${i + 1}`, characterIds: ['linjing'], sceneId: 's1', camera: '中景', durationSec: 3,
+      })),
+    }
+    writeFileSync(join(s.rd, 'storyboard.json'), JSON.stringify({ ...fiveShots, characters: SCRIPT.characters, scenes: SCRIPT.scenes }))
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    s.runs.setStage(s.run.id, 'shot-assets', 'done')
+    s.runs.appendEvent(s.run.id, 'shot-urls', { urls: Array.from({ length: 5 }, (_, i) => ({ index: i + 1, url: `https://oss.example/ref-${i + 1}.png`, file: join(s.rd, 'shots', `shot-00${i + 1}.png`) })) })
+    let submitCalls = 0
+    const failingVideo = {
+      id: 'fake-video-fuse', capabilities: { imageToVideo: true, qualityTier: 5 },
+      quote: async () => ({ qualityTier: 5, costEstimate: 0.013, currency: 'CNY' }),
+      submit: async (_s: string, spec: Record<string, unknown>) => {
+        submitCalls++
+        const n = Number(String(spec['imageUrl']).match(/ref-(\d)/)?.[1])
+        if (n >= 2) throw new Error(`shot ${n} 提交被拒`)
+        return { jobId: 'task-1' }
+      },
+      status: async () => ({ state: 'done' as const, progress: 100 }),
+      fetch: async (jobId: string) => ({ outputs: [`https://oss.example/${jobId}.mp4`] }),
+      health: async () => ({ ok: true }),
+    }
+    const providers = { forModel: (m: string) => m.includes('i2v') ? failingVideo : fakeImageProvider('https://img.example/x.png') }
+    await assert.rejects(
+      advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'video', videoModel: 'happyhorse-1.1-i2v', providers, confirmer: async () => true, ffmpeg: null, pollDelayMs: 1 }),
+      /提交被拒/,
+    )
+    await new Promise((r) => setTimeout(r, 120)) // 给旧实现的"继续烧"窗口
+    assert.ok(submitCalls <= 2, `首镜失败后仍提交了后续镜头：submit 共 ${submitCalls} 次`)
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('gate ask：ask 返回 false -> 报审批拒绝；未提供 ask 通道 -> 明确报错', async () => {
+  const s = setup()
+  try {
+    const providers = { forModel: () => fakeImageProvider('https://img.example/x.png') }
+    await assert.rejects(
+      advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'master-asset', providers, confirmer: async () => true, ffmpeg: null, gates: { 'master-asset': 'ask' }, ask: async () => false }),
+      /ask 审批中被拒绝/,
+    )
+    await assert.rejects(
+      advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'master-asset', providers, confirmer: async () => true, ffmpeg: null, gates: { 'master-asset': 'ask' } }),
+      /未提供 ask 通道/,
+    )
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('video 段 provider failed：段置 failed 并 rethrow', async () => {
+  const s = setup()
+  try {
+    const failing = {
+      id: 'fake-video-fail', capabilities: { imageToVideo: true, qualityTier: 5 },
+      quote: async () => ({ qualityTier: 5, costEstimate: 0.013, currency: 'CNY' }),
+      submit: async () => ({ jobId: 'task-f' }),
+      status: async () => ({ state: 'failed' as const, progress: null, error: '内容审核未通过' }),
+      fetch: async () => ({ outputs: [] }),
+      health: async () => ({ ok: true }),
+    }
+    const common = { ...BASE, runs: s.runs, runId: s.run.id, confirmer: async () => true, ffmpeg: null }
+    await advanceRun({ ...common, target: 'shot-assets', providers: { forModel: () => fakeImageProvider('https://img.example/x.png') } })
+    await assert.rejects(
+      advanceRun({ ...common, target: 'video', videoModel: 'happyhorse-1.1-i2v', providers: { forModel: (m: string) => m.includes('i2v') ? failing : fakeImageProvider('https://img.example/x.png') } }),
+      /内容审核/,
+    )
+    assert.equal(s.runs.get(s.run.id)!.stages['video'], 'failed')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
 test('advanceRun：确认被拒 -> 报用户取消；gate manual 未提供产物 -> 明确报错', async () => {
   const s = setup()
   try {
