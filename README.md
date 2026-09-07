@@ -87,7 +87,7 @@ drives update detection.
 
 ## Agent 预设（漫剧导演，含疗愈绘本题材包）
 
-插件加载时自动把 `presets/`（`preset.yml` + `agent.cordis.yml`）幂等安装到 `~/.dsh/.agent-presets/dsh-video-generator/` 与 `~/.kcoder/.agent-presets/dsh-video-generator/`（双候选目录任一失败静默，不阻断插件加载），宿主预设列表中可直接选用「漫剧导演」：三段交接流程纪律、评审重拍闭环、成本/gate 护栏与「疗愈绘本」题材包（风格词汇/角色原型/节奏模板/负面词）。
+插件加载时自动把 `presets/`（`preset.yml` + `agent.cordis.yml`）幂等安装到 `<DSH_HOME>/.agent-presets/dsh-video-generator/`——跟随宿主 harness home（`DSH_HOME` 优先，未设回退 `~/.dsh`；KCoder 等品牌部署由其启动器注入自己的 home，如 `~/.kcoder`），安装失败静默、不阻断插件加载。宿主预设列表中可直接选用「漫剧导演」：三段交接流程纪律、评审重拍闭环、成本/gate 护栏与「疗愈绘本」题材包（风格词汇/角色原型/节奏模板/负面词）。
 
 ## 开发
 

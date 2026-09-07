@@ -72,23 +72,25 @@ function packageRoot(): string {
   return fileURLToPath(new URL('../../', import.meta.url))
 }
 
-/** 预设安装（super-ppts 模式，幂等）：写 ~/.dsh 与 ~/.kcoder 双候选目录
- *  （宿主品牌 home 分叉期的双保险），任一失败静默——预设缺失不阻断插件加载。 */
-function ensurePresetInstalled(): void {
+/** 预设安装目标：跟随宿主 harness home——`DSH_HOME` 优先，未设回退用户主目录
+ *  （与 resolveVaultPath/resolveRunsDir 同一优先级语义；stock dsh 启动器缺省 home 为
+ *  ~/.dsh，KCoder 等品牌部署由其启动器注入自己的 DSH_HOME，如 ~/.kcoder）。
+ *  预设发现面 = <harnessHome>/.agent-presets/<插件名>/，禁止写死任何品牌目录。 */
+function presetInstallDir(env: NodeJS.ProcessEnv): string {
+  const base = env['DSH_HOME'] ?? homedir()
+  return join(base, '.agent-presets', 'dsh-video-generator')
+}
+
+/** 预设安装（幂等，跟随 harness home）；失败静默——预设缺失不阻断插件加载。 */
+function ensurePresetInstalled(env: NodeJS.ProcessEnv): void {
   try {
     const src = resolve(packageRoot(), 'presets')
     if (!existsSync(src)) return
-    for (const base of ['.dsh', '.kcoder']) {
-      try {
-        const dest = join(homedir(), base, '.agent-presets', 'dsh-video-generator')
-        mkdirSync(dest, { recursive: true })
-        for (const f of ['preset.yml', 'agent.cordis.yml']) {
-          const p = join(src, f)
-          if (existsSync(p)) copyFileSync(p, join(dest, f))
-        }
-      } catch {
-        // 单目录失败不影响另一目录
-      }
+    const dest = presetInstallDir(env)
+    mkdirSync(dest, { recursive: true })
+    for (const f of ['preset.yml', 'agent.cordis.yml']) {
+      const p = join(src, f)
+      if (existsSync(p)) copyFileSync(p, join(dest, f))
     }
   } catch {
     // 预设安装失败不阻断插件加载
@@ -96,7 +98,7 @@ function ensurePresetInstalled(): void {
 }
 
 export function apply(ctx: HostContext): () => void {
-  ensurePresetInstalled()
+  ensurePresetInstalled(process.env)
   const vault = VaultStore.open({ env: process.env })
   const runs = RunStore.open({ env: process.env })
   const web = ctx.webServer

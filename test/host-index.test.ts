@@ -424,24 +424,22 @@ test('runs prefix：列表免围栏、未知 run 详情 404、非两段路径 40
   }
 })
 
-test('M4: apply 安装预设到 ~/.dsh 与 ~/.kcoder 的 .agent-presets（幂等）', () => {
+test('M4: apply 安装预设到 <DSH_HOME>/.agent-presets（跟随 harness home，幂等）', () => {
   const home = mkdtempSync(join(tmpdir(), 'vgen-home-'))
   const prev = process.env['HOME']
   process.env['HOME'] = home
   try {
     // 真实调用 apply()（wire 装置内部）触发 ensurePresetInstalled；
-    // DSH_HOME 一并落 home → vault/runs 同步隔离，不触真实用户目录。
+    // 预设目标 = DSH_HOME/.agent-presets（禁止写死品牌目录），vault/runs 同步隔离。
     wire({ DSH_HOME: home })
-    for (const base of ['.dsh', '.kcoder']) {
-      assert.ok(existsSync(join(home, base, '.agent-presets', 'dsh-video-generator', 'preset.yml')), `缺 ${base} 预设`)
-      assert.ok(
-        existsSync(join(home, base, '.agent-presets', 'dsh-video-generator', 'agent.cordis.yml')),
-        `缺 ${base} agent.cordis.yml`,
-      )
-    }
+    const dest = join(home, '.agent-presets', 'dsh-video-generator')
+    assert.ok(existsSync(join(dest, 'preset.yml')), '缺 preset.yml')
+    assert.ok(existsSync(join(dest, 'agent.cordis.yml')), '缺 agent.cordis.yml')
     // 幂等：再次 apply 不炸、文件仍在
     wire({ DSH_HOME: home })
-    assert.ok(existsSync(join(home, '.dsh', '.agent-presets', 'dsh-video-generator', 'preset.yml')))
+    assert.ok(existsSync(join(dest, 'preset.yml')))
+    // 写死品牌目录回归：不得出现 <DSH_HOME>/.dsh 或 .kcoder 层
+    assert.ok(!existsSync(join(home, '.dsh')) && !existsSync(join(home, '.kcoder')), '不得写死品牌目录层')
   } finally {
     if (prev === undefined) delete process.env['HOME']
     else process.env['HOME'] = prev
