@@ -15,6 +15,19 @@ dsh plugin --profile web add dsh-video-generator
 dsh plugin --profile web add github:kkutysllb/dsh-video-generator
 ```
 
+**装到哪个 harness home 由启动器决定**：`dsh plugin add` 的落点是启动器解析的
+`<DSH_HOME>/profiles/<profile>`——`DSH_HOME` 优先，未设时 stock CLI 缺省 `~/.dsh`。
+KCoder 桌面端的 profile 在 `~/.kcoder/profiles/web`，给桌面端装插件请带前缀
+（装完重启/重载桌面端生效）：
+
+```bash
+# KCoder 桌面端 / KCoder desktop
+DSH_HOME=~/.kcoder dsh plugin --profile web add dsh-video-generator
+```
+
+插件的「漫剧导演」预设也随之落到 `<DSH_HOME>/.agent-presets/dsh-video-generator/`，
+与安装目标同一 home 语义。
+
 装好后切换 Agent 预设「**漫剧导演**」即可开始（插件加载时自动安装预设；也可不切预设，
 直接在对话里说需求，能力通告会引导路由）。
 
