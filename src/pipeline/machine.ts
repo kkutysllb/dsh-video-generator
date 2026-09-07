@@ -16,7 +16,7 @@ import { STAGES, type StageId } from '../stages.ts'
 import { pollUntil, retryTransient } from '../poll.ts'
 import { buildTimeline, writeSrt, type TimelineData, Timeline } from '../finalcut/timeline.ts'
 import { renderTimeline, probeDurationSec } from '../finalcut/render-ffmpeg.ts'
-import { resolveVoice, buildMacSayCommand, buildSapiScript } from '../finalcut/voice.ts'
+import { resolveVoice, buildMacSayCommand, buildSapiScript, synthesizeCloudSpeech, type CloudTtsConfig } from '../finalcut/voice.ts'
 
 export interface MachineDeps {
   runs: RunStore
@@ -34,6 +34,8 @@ export interface MachineDeps {
   imageModel?: string
   gates?: Partial<Record<StageId, 'auto' | 'ask' | 'manual'>>
   ask?: (stage: StageId, info: string) => Promise<boolean>
+  /** 云端 TTS（配置即启用，自然度优先；失败自动回退本地 say/SAPI）。 */
+  tts?: CloudTtsConfig
   /** 状态轮询基础间隔（ms），默认 1000。 */
   pollDelayMs?: number
 }
@@ -301,9 +303,23 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           if (!existsSync(clip)) throw new Error(`final-cut 缺少视频片段: ${clip}`)
           const durSec = (await probeDurationSec(clip, deps.ffmpeg)) ?? shot.durationSec ?? 5
           const text = shot.voiceHint ?? ''
-          const voice = resolveVoice({ voiceFile: shot.voiceFile, voiceHint: text }, process.platform)
+          let voice = resolveVoice({ voiceFile: shot.voiceFile, voiceHint: text }, process.platform)
           let audio: string | undefined
           let audioDurUs: number | undefined
+          if (deps.tts && text && voice?.kind !== 'file') {
+            // 云端优先：失败回退本地（say/SAPI），事件留痕
+            try {
+              const mp3 = join(clipsDir, `voice-cloud-${shot.index}.mp3`)
+              const bytes = await retryTransient(() => synthesizeCloudSpeech(deps.tts!, text, fetchImpl), 3, 3000)
+              writeFileSync(mp3, bytes, { mode: 0o600 })
+              audio = mp3
+              audioDurUs = Math.round(((await probeDurationSec(mp3, deps.ffmpeg)) ?? 0) * 1e6)
+              voice = null
+            } catch (err) {
+              runs.appendEvent(runId, 'tts-fallback', { shot: shot.index, reason: err instanceof Error ? err.message : String(err) })
+              voice = resolveVoice({ voiceHint: text }, process.platform)
+            }
+          }
           if (voice?.kind === 'say') {
             const aiff = join(clipsDir, `voice-${shot.index}.aiff`)
             const mp3 = join(clipsDir, `voice-${shot.index}.mp3`)

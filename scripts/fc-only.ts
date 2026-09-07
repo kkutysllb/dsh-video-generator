@@ -1,3 +1,6 @@
+/** 运维工具：对已有 run 单独重推 final-cut 段（渲染失败重试/换 ffmpeg/换 TTS 后重渲）。
+ *  用法: VGEN_BASE_URL=... VGEN_API_KEY=... [VGEN_TTS_MODEL=...] [VGEN_FFMPEG=...] node scripts/fc-only.ts <workDir> <runId>
+ */
 import readline from 'node:readline/promises'
 import { VaultStore } from '../src/store/vault.ts'
 import { RunStore } from '../src/store/runs.ts'
@@ -9,7 +12,7 @@ async function main(): Promise<void> {
   const env = { ...process.env, DSH_HOME: workDir }
   const vault = VaultStore.open({ env })
   const runs = RunStore.open({ env })
-  runs.setStage(runId, 'final-cut', 'pending') // 重置该段
+  runs.setStage(runId, 'final-cut', 'pending')
   const channel = { id: 'vectorengine', baseUrl: process.env['VGEN_BASE_URL']!, apiKey: process.env['VGEN_API_KEY']! }
   const interactive = Boolean(process.stdin.isTTY)
   const confirm = async (est: number | null): Promise<boolean> => {

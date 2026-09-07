@@ -11,6 +11,7 @@ import { SpendLedger } from '../spend.ts'
 import { providerForModel } from '../registry.ts'
 import { advanceRun } from '../pipeline/machine.ts'
 import { locateFfmpeg } from '../finalcut/render-ffmpeg.ts'
+import type { CloudTtsConfig } from '../finalcut/voice.ts'
 import type { ToolResult } from './handoff.ts'
 import { HandoffError } from '../schema/handoff.ts'
 
@@ -28,6 +29,8 @@ export interface GenerateContext {
   providersOverride?: { forModel: MachineDeps['providers']['forModel'] }
   /** 测试注入：下载用 fetch。 */
   fetchImpl?: typeof fetch
+  /** 测试注入：云端 TTS 配置。生产路径从 env（VGEN_TTS_MODEL/VGEN_TTS_VOICE/VGEN_TTS_INSTRUCTIONS）解析。 */
+  tts?: CloudTtsConfig
 }
 
 export interface GenerateArgs {
@@ -80,6 +83,7 @@ export function buildGenerateTools(ctx: GenerateContext): {
               return false
             },
             ffmpeg: locateFfmpeg(env),
+            tts: ctx.tts ?? (env['VGEN_TTS_MODEL'] ? { baseUrl: channel.baseUrl, apiKey: channel.apiKey, model: env['VGEN_TTS_MODEL'], voice: env['VGEN_TTS_VOICE'] || undefined, instructions: env['VGEN_TTS_INSTRUCTIONS'] || undefined } : undefined),
             concurrency: typeof args['concurrency'] === 'number' ? args['concurrency'] : undefined,
             fetchImpl: ctx.fetchImpl,
           })
