@@ -16,7 +16,7 @@ export async function fetchPricing(target: { baseUrl: string; apiKey: string }, 
   const base = target.baseUrl.trim().replace(/\/+$/, '')
   const json = await getJson<{ data?: PricingRow[] }>(`${base}/api/pricing`, target.apiKey, fetchImpl, timeoutMs)
   const table: PricingTable = new Map()
-  for (const row of json.data ?? []) {
+  for (const row of json?.data ?? []) {
     if (typeof row?.model_name === 'string') table.set(row.model_name, row)
   }
   return table
