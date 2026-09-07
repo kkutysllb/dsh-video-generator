@@ -27,7 +27,7 @@ function fakeCtx(runs: RunStore, providerCalls: string[] = []) {
   const fakeProvider: Provider = {
     id: 'fake', capabilities: {},
     async quote() { return { qualityTier: 5, costEstimate: 0, currency: 'CNY' } },
-    async submit(_s, spec) { providerCalls.push(`submit:${String(spec['prompt']).slice(0, 20)}`); return { jobId: 'job-1' } },
+    async submit(_s, spec) { providerCalls.push(`submit:${String(spec['prompt'])}`); return { jobId: 'job-1' } },
     async status() { return { state: 'done', progress: 100 } },
     async fetch() { return { outputs: ['mock://out/new.mp4'] } },
     async health() { return { ok: true } },
@@ -158,9 +158,11 @@ test('阶段B：score≤2 → 自动重拍（备份旧片 + 负面词入 prompt 
     assert.ok(existsSync(join(clips, 'shot-001.rejected-1.mp4')))
     assert.ok(existsSync(join(clips, 'shot-001.mp4')))
     assert.notEqual(readFileSync(join(clips, 'shot-001.mp4'), 'utf8'), 'old-clip')
-    // 负面词进了重拍 prompt（通用负面 + 自定义 hint）
+    // 负面词进了重拍 prompt（运动提示词 + 通用负面 + 自定义 hint 全判别）
     assert.equal(calls.length, 1)
     assert.match(calls[0]!, /镜头缓慢推进/)
+    assert.match(calls[0]!, /肢体扭曲/)
+    assert.match(calls[0]!, /模糊/)
     const rec = runs.get(runId)!
     assert.deepEqual(rec.reviews?.['shot-1'], { scores: [2], retries: 1, passed: false })
     assert.ok(rec.events.some((e) => e.type === 'reshoot'))

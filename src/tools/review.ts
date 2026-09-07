@@ -3,7 +3,7 @@
  *  阶段B（带 score）：1-5 clamp 记录进 run.json；≤2 自动追加负面词重拍（每镜 ≤2 次，花费走 confirm 语义）；
  *  非法 score 兜底不重拍（review-invalid 事件留痕）。重拍后自动重新抽帧，闭环回阶段B。 */
 
-import { existsSync, readFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import type { VaultStore } from '../store/vault.ts'
 import type { RunStore, RunEvent } from '../store/runs.ts'
@@ -74,6 +74,7 @@ export function buildReviewTools(ctx: ReviewContext): {
           const clip = join(runDir, 'clips', `${shotFileBase(shot)}.mp4`)
           const reviewDir = join(runDir, 'review', shotFileBase(shot))
           const key = `shot-${shot}`
+          // 浅拷贝档案 + push + setReview 全量写回：依赖 run.json 单调用方串行读写（RunStore 同款约束）
           const entry = { ...(record.reviews?.[key] ?? { scores: [], retries: 0, passed: false }) }
           const ffmpeg = ctx.ffmpeg !== undefined ? ctx.ffmpeg : locateFfmpeg(env)
           const extract = ctx.extract ?? extractReviewFrames
@@ -172,7 +173,9 @@ export function buildReviewTools(ctx: ReviewContext): {
               },
             })
           } catch (err) {
-            if (!existsSync(clip)) renameSync(backup, clip) // 重拍失败回滚旧片，run 保持可用
+            // 无条件回滚：saveUrl 中途失败可能留下半截新片，先删再复位旧片（备份恒存在——刚 rename 过来的）
+            if (existsSync(clip)) rmSync(clip)
+            renameSync(backup, clip)
             ctx.runs.appendEvent(runId, 'reshoot-failed', { shot, error: (err instanceof Error ? err.message : String(err)).slice(0, 300) })
             throw err
           }
