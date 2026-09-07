@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { handleApi, healthPayload, isLoopbackRequest } from '../src/host/routes.ts'
+import { handleApi, healthPayload, isLoopbackRequest, resolveMediaPath, mediaContentType } from '../src/host/routes.ts'
 import { VaultStore } from '../src/store/vault.ts'
 import { RunStore } from '../src/store/runs.ts'
 import { probeChannel } from '../src/probe.ts'
@@ -286,4 +286,28 @@ test('M4: settings.update gateDefaults 校验段名与模式', () => {
   } finally {
     rmSync(c.dir, { recursive: true, force: true })
   }
+})
+
+test('M4: resolveMediaPath 合法路径解析到 run 目录内', () => {
+  const p = resolveMediaPath('/runs-root', '/media/run-123-abc/clips/shot-001.mp4')
+  assert.equal(p, join('/runs-root', 'run-123-abc', 'clips', 'shot-001.mp4'))
+})
+
+test('M4: resolveMediaPath 拒绝穿越/绝对路径/空段/非法 runId', () => {
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/../../etc/passwd'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/%2e%2e/x'), null) // 调用方已 decode，这里直接见 '..' 形态
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1//x'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/./x'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/../vault.json'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/RUN-Upper/x.png'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/other/run-1/x.png'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/sub/../shot.png'), null)
+})
+
+test('M4: mediaContentType 映射 + 缺省 octet-stream', () => {
+  assert.equal(mediaContentType('a.png'), 'image/png')
+  assert.equal(mediaContentType('a.MP4'), 'video/mp4')
+  assert.equal(mediaContentType('a.srt'), 'text/plain; charset=utf-8')
+  assert.equal(mediaContentType('a.bin'), 'application/octet-stream')
 })

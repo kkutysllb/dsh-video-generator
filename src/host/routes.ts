@@ -3,6 +3,7 @@
  * 对齐 dsh-super-ppts 路由模式；handler 不碰 node:http，便于无宿主测试。
  */
 
+import { resolve, sep } from 'node:path'
 import type { VaultStore } from '../store/vault.ts'
 import { VaultError } from '../store/vault.ts'
 import type { RunStore } from '../store/runs.ts'
@@ -207,4 +208,45 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
     default:
       throw new VaultError('bad-request', `unknown-method: ${name}`)
   }
+}
+
+const MEDIA_RUNID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+/** '/media/<runId>/<rel...>' → run 目录内绝对路径；任何穿越/畸形 → null（调用方 404）。
+ *  入参 urlPath 必须已 decodeURIComponent。防线三层：runId 白名单正则、rel 段级拒绝 '.'/'..'/空段、
+ *  resolve 后前缀核验（endsWith 兜底不做——前缀 + sep 即充分）。 */
+export function resolveMediaPath(runsRoot: string, urlPath: string): string | null {
+  const m = /^\/media\/([^/?#]+)\/(.+)$/.exec(urlPath)
+  if (!m) return null
+  const runId = m[1]!
+  const rel = m[2]!
+  if (!MEDIA_RUNID_RE.test(runId)) return null
+  const segs = rel.split('/')
+  // 段级拒绝：''/'.'/'..' 直接拒；另防御性二次 decode 段值，%2e 等编码形态还原后为 '.'/'..'/空 同样拒
+  //（双 decode 不误伤合法文件名——按契约入参应已 decode，残留 % 编码段本就异常）。
+  const dangerous = segs.some((s) => {
+    if (s === '' || s === '.' || s === '..') return true
+    try {
+      const d = decodeURIComponent(s)
+      return d === '' || d === '.' || d === '..'
+    } catch {
+      return true
+    }
+  })
+  if (dangerous) return null
+  const base = resolve(runsRoot, runId)
+  const resolved = resolve(base, segs.join(sep))
+  if (!resolved.startsWith(base + sep)) return null
+  return resolved
+}
+
+const MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.aiff': 'audio/aiff', '.wav': 'audio/wav',
+  '.srt': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8',
+}
+
+export function mediaContentType(filename: string): string {
+  const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
+  return MEDIA_TYPES[ext] ?? 'application/octet-stream'
 }

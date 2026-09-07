@@ -1,6 +1,8 @@
 /** DSH 插件入口：cordis 风格注册 webServer 路由（effect 生命周期管理）。 */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createReadStream, existsSync, statSync } from 'node:fs'
+import { basename } from 'node:path'
 import { VaultStore } from '../store/vault.ts'
 import { RunStore } from '../store/runs.ts'
 import { probeChannel } from '../probe.ts'
@@ -10,7 +12,7 @@ import { buildProvideTools, provideToolDefs } from '../tools/provide.ts'
 import { buildReviewTools, reviewToolDefs } from '../tools/review.ts'
 import { buildChannelsTools, channelsToolDefs } from '../tools/channels.ts'
 import type { ChannelRef } from '../registry.ts'
-import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest } from './routes.ts'
+import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest, resolveMediaPath, mediaContentType } from './routes.ts'
 
 export const name = PLUGIN_ID
 
@@ -109,11 +111,120 @@ export function apply(ctx: HostContext): () => void {
   ctx.effect(
     () =>
       web.register({
-        kind: 'exact',
+        kind: 'prefix',
         path: `/${PLUGIN_ID}/runs`,
-        handler: (_req, res) => json(res, 200, { ok: true, value: { runs: runs.list() } }),
+        handler: async (req, res) => {
+          const pathname = (req.url ?? '').split('?')[0] ?? ''
+          if (pathname === `/${PLUGIN_ID}/runs` || pathname === `/${PLUGIN_ID}/runs/`) {
+            json(res, 200, { ok: true, value: { runs: runs.list() } })
+            return
+          }
+          const m = new RegExp(`^/${PLUGIN_ID}/runs/([^/?#]+)$`).exec(pathname)
+          if (!m) {
+            json(res, 404, { ok: false, error: { code: 'not-found', message: '未知路径' } } as const)
+            return
+          }
+          if (!isLoopbackRequest(req.headers.host, req.socket.remoteAddress)) {
+            json(res, 403, { ok: false, error: { code: 'forbidden', message: '仅限本机回环访问' } } as const)
+            return
+          }
+          const envelope = await handleApi({ vault, runs, probe: probeChannel }, 'runs.get', { id: decodeURIComponent(m[1]!) })
+          json(res, envelope.ok ? 200 : errorStatus(envelope), envelope)
+        },
       }),
-    `${PLUGIN_ID}: runs route`,
+    `${PLUGIN_ID}: runs routes`,
+  )
+
+  ctx.effect(
+    () =>
+      web.register({
+        kind: 'prefix',
+        path: `/${PLUGIN_ID}/media`,
+        handler: (req, res) => {
+          if (!isLoopbackRequest(req.headers.host, req.socket.remoteAddress)) {
+            json(res, 403, { ok: false, error: { code: 'forbidden', message: '仅限本机回环访问' } })
+            return
+          }
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            json(res, 405, { ok: false, error: { code: 'method-not-allowed', message: '仅 GET/HEAD' } })
+            return
+          }
+          let pathname: string
+          try {
+            // urlPath 按契约须已 decode：这里集中 decode 一次，失败 400；再剥 '/dsh-video-generator' 前缀得 '/media/...'
+            pathname = decodeURIComponent((req.url ?? '').split('?')[0] ?? '').slice(PLUGIN_ID.length + 1)
+          } catch {
+            json(res, 400, { ok: false, error: { code: 'bad-url', message: 'URL 解码失败' } })
+            return
+          }
+          const file = resolveMediaPath(runs.rootDir, pathname)
+          if (!file || !existsSync(file) || !statSync(file).isFile()) {
+            json(res, 404, { ok: false, error: { code: 'not-found', message: '产物不存在' } })
+            return
+          }
+          const stat = statSync(file)
+          res.statusCode = 200
+          res.setHeader('content-type', mediaContentType(basename(file)))
+          res.setHeader('content-length', String(stat.size))
+          res.setHeader('cache-control', 'no-store')
+          if (req.method === 'HEAD') {
+            res.end()
+            return
+          }
+          const stream = createReadStream(file)
+          stream.on('error', () => {
+            res.destroy()
+          })
+          stream.pipe(res)
+        },
+      }),
+    `${PLUGIN_ID}: media route`,
+  )
+
+  ctx.effect(
+    () =>
+      web.register({
+        kind: 'exact',
+        path: `/${PLUGIN_ID}/channels`,
+        handler: async (req, res) => {
+          if (!isLoopbackRequest(req.headers.host, req.socket.remoteAddress)) {
+            json(res, 403, { ok: false, error: { code: 'forbidden', message: '仅限本机回环访问' } })
+            return
+          }
+          const envelope = await handleApi({ vault, runs, probe: probeChannel }, 'channels.list', {})
+          json(res, envelope.ok ? 200 : errorStatus(envelope), envelope)
+        },
+      }),
+    `${PLUGIN_ID}: channels route`,
+  )
+
+  ctx.effect(
+    () =>
+      web.register({
+        kind: 'exact',
+        path: `/${PLUGIN_ID}/settings`,
+        handler: async (req, res) => {
+          if (!isLoopbackRequest(req.headers.host, req.socket.remoteAddress)) {
+            json(res, 403, { ok: false, error: { code: 'forbidden', message: '仅限本机回环访问' } })
+            return
+          }
+          if (req.method !== 'POST') {
+            json(res, 405, { ok: false, error: { code: 'method-not-allowed', message: '仅 POST' } })
+            return
+          }
+          let body: Record<string, unknown> = {}
+          try {
+            body = await readJsonBody(req)
+          } catch (err) {
+            if (err instanceof BodyTooLargeError) json(res, 413, { ok: false, error: { code: 'too-large', message: '请求体超过 1MB' } })
+            else json(res, 400, { ok: false, error: { code: 'bad-json', message: '请求体非法 JSON' } })
+            return
+          }
+          const envelope = await handleApi({ vault, runs, probe: probeChannel }, 'settings.update', body)
+          json(res, envelope.ok ? 200 : errorStatus(envelope), envelope)
+        },
+      }),
+    `${PLUGIN_ID}: settings route`,
   )
 
   ctx.effect(
