@@ -185,3 +185,42 @@ test('M4: vgen_status 返回 reviews/gates', async () => {
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
+
+test('M4: VGEN_VIDEO_MODEL 覆盖传导到 provider 选择（上游分组饱和换档）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-gen-vm-'))
+  try {
+    const vault = VaultStore.open({ file: join(dir, 'vault.json') })
+    vault.createChannel({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678' })
+    vault.setDefaultChannel('ve')
+    const runs = RunStore.open({ rootDir: join(dir, 'runs') })
+    const run = runs.create('换档')
+    runs.setStage(run.id, 'story', 'done')
+    runs.setStage(run.id, 'script', 'done')
+    runs.setStage(run.id, 'storyboard', 'done')
+    const rd = join(dir, 'runs', run.id)
+    writeFileSync(join(rd, 'story.json'), JSON.stringify(STORY))
+    writeFileSync(join(rd, 'script.json'), JSON.stringify(SCRIPT))
+    writeFileSync(join(rd, 'storyboard.json'), JSON.stringify({ ...SHOTS, characters: SCRIPT.characters, scenes: SCRIPT.scenes }))
+    const requested: string[] = []
+    const env = { DSH_HOME: dir, VGEN_FFMPEG: '', VGEN_VIDEO_MODEL: 'wan2.6-i2v' } as unknown as NodeJS.ProcessEnv
+    const tools = buildGenerateTools({
+      vault, runs,
+      channel: () => ({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678' }),
+      env,
+      pricing: FAKE_PRICING,
+      providersOverride: {
+        forModel: (model: string) => {
+          requested.push(model)
+          return model.includes('i2v') ? fakeVideoProvider() : fakeImageProvider(`https://img.example/${model.replace(/\W/g, '-')}.png`)
+        },
+      },
+      fetchImpl: fetchFake,
+    })
+    const r = await tools.generate.execute({ runId: run.id, target: 'video', confirm: true }) as { ok: boolean }
+    assert.equal(r.ok, true)
+    assert.ok(requested.includes('wan2.6-i2v'), 'video 段应使用 VGEN_VIDEO_MODEL 指定的模型')
+    assert.ok(!requested.includes('happyhorse-1.1-i2v'), '不应回退缺省模型')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -115,6 +115,8 @@ export function buildGenerateTools(ctx: GenerateContext): {
               return false
             },
             ffmpeg: locateFfmpeg(env),
+            // 视频模型覆盖：上游分组饱和时换档（如 happyhorse→wan2.6-i2v），缺省走 machine 内置
+            videoModel: env['VGEN_VIDEO_MODEL'] || undefined,
             tts: ctx.tts ?? (env['VGEN_TTS_MODEL'] ? { baseUrl: channel.baseUrl, apiKey: channel.apiKey, model: env['VGEN_TTS_MODEL'], voice: env['VGEN_TTS_VOICE'] || undefined, instructions: env['VGEN_TTS_INSTRUCTIONS'] || undefined } : undefined),
             concurrency: typeof args['concurrency'] === 'number' ? args['concurrency'] : undefined,
             fetchImpl: ctx.fetchImpl,
