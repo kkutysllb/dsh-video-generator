@@ -11,7 +11,9 @@
     "test": "node --test --test-reporter tap \"test/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.all.json",
     "demo:mock": "node scripts/demo-mock.ts",
-    "prepack": "npm run build && npm run typecheck && npm test"
+    "prepack": "npm run build && npm run typecheck && npm test",
+    "sync:mirror": "node scripts/sync-to-dsh-plugins.mjs",
+    "sync:check": "node scripts/sync-to-dsh-plugins.mjs --check"
   },
   "main": "./lib/host/index.js",
   "exports": {

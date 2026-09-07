@@ -13,6 +13,11 @@ dsh plugin --profile web add dsh-video-generator
 
 # GitHub 直装 / install straight from GitHub
 dsh plugin --profile web add github:kkutysllb/dsh-video-generator
+
+# 或从 dsh-plugins 真源仓 / or from the dsh-plugins monorepo
+# （pnpm 的 github: 说明符只认仓库根为包边界，子目录插件先 clone 后按路径安装）
+git clone git@github.com:kkutysllb/dsh-plugins.git
+dsh plugin --profile web add ./dsh-plugins/dsh-video-generator
 ```
 
 **装到哪个 harness home 由启动器决定**：`dsh plugin add` 的落点是启动器解析的

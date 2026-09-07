@@ -31,5 +31,9 @@
 3. 提交并打 tag：`git tag -a vX.Y.Z -m "..."`
 4. 推送（含 tag）：`git push origin main --follow-tags`
 5. npm 渠道：`npm publish`（`prepack` 会自动 build + typecheck + test）
-6. GitHub Release 页面：把 `release/vX.Y.Z.md` 内容发布为对应 tag 的 Release
+6. **镜像同步**：`npm run sync:mirror` 把发布物镜像到 `../dsh-plugins/dsh-video-generator/`，
+   在 dsh-plugins 仓提交推送（`KCODER_PLUGINS_DIR` 可覆盖仓位置）；保证独立仓 /
+   dsh-plugins 子目录两个安装入口内容一致
+7. 对账：`npm run sync:check` 零差异
+8. GitHub Release 页面：把 `release/vX.Y.Z.md` 内容发布为对应 tag 的 Release
    （有 gh CLI 可 `gh release create vX.Y.Z -F release/vX.Y.Z.md`，或网页手动创建）
