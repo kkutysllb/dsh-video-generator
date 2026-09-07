@@ -9,7 +9,7 @@ export interface PollOptions<T> {
   maxDelayMs?: number
 }
 
-function isTransient(err: unknown): boolean {
+export function isTransient(err: unknown): boolean {
   if (!(err instanceof RelayError)) return false
   const s = err.status
   return s === 0 || s === 429 || s >= 500
@@ -38,4 +38,19 @@ export async function pollUntil<T>(attempt: () => Promise<T>, opts: PollOptions<
     await new Promise((r) => setTimeout(r, delay))
     delay = Math.min(delay * 2, maxDelayMs)
   }
+}
+
+/** 瞬时错误（网络/429/5xx）重试包装：非瞬时错误立即抛出。submit 类操作慎用（可能重复计费），轮询/下载类安全。 */
+export async function retryTransient<T>(fn: () => Promise<T>, attempts = 3, baseMs = 3000): Promise<T> {
+  let lastErr: unknown = null
+  for (let n = 1; n <= attempts; n++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (!isTransient(err) || n === attempts) throw err
+      lastErr = err
+      await new Promise((r) => setTimeout(r, baseMs * 2 ** (n - 1)))
+    }
+  }
+  throw lastErr
 }
