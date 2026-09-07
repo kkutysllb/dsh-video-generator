@@ -100,30 +100,38 @@ export function buildProvideTools(ctx: ProvideContext): {
             if (!existsSync(sbFile)) throw new HandoffError('bad-request', `run ${runId} 缺少 storyboard.json：请先完成分镜段`)
             const sb = JSON.parse(readFileSync(sbFile, 'utf8')) as { shots: Array<{ index: number }> }
             const dest = join(runDir, 'clips')
-            mkdirSync(dest, { recursive: true, mode: 0o700 })
-            for (const f of files) {
+            // 先全验后拷（真不半注入）：shot 号 → 全镜覆盖 → ffmpeg → 时长，全过才落盘；
+            // 旧序（拷后验）失败会把残留 clip 留在 clips/ 被下次覆盖校验误计入。
+            const planned = files.map((f) => {
               const shot = Number(f.shot)
               if (!Number.isInteger(shot) || shot < 1) throw new HandoffError('bad-request', `video 每项须带 shot（≥1 整数）: ${JSON.stringify(f)}`)
-              copyFileSync(f.path!, join(dest, shotName(shot, '.mp4')))
-              ingested++
-            }
+              return { shot, src: f.path!, dest: join(dest, shotName(shot, '.mp4')) }
+            })
             // 全镜覆盖校验：storyboard 每一镜的 clip 都必须在位（本次注入或此前已存在）
+            const providedIdx = new Set(planned.map((p) => p.shot))
             const missing: number[] = []
             const clipFiles: string[] = []
             for (const s of sb.shots) {
               const p = join(dest, shotName(s.index, '.mp4'))
-              if (existsSync(p)) clipFiles.push(p)
+              if (providedIdx.has(s.index) || existsSync(p)) clipFiles.push(p)
               else missing.push(s.index)
             }
             if (missing.length) throw new HandoffError('bad-request', `video 段缺少镜头: ${missing.join(', ')}（须覆盖 storyboard 全部 ${sb.shots.length} 镜）`)
-            // 时长校验（鲸影规则层继承：≥0.5s）
+            // 时长校验（鲸影规则层继承：≥0.5s）；ffmpeg 缺失是环境问题非请求错误 → 普通 Error 走 internal 信封（对齐 review.ts）
             const ffmpeg = ctx.ffmpeg !== undefined ? ctx.ffmpeg : locateFfmpeg(env)
-            if (!ffmpeg) throw new HandoffError('bad-request', '未找到 ffmpeg，无法校验片段时长（可设 VGEN_FFMPEG）')
-            for (const p of clipFiles) {
-              const dur = await probe(p, ffmpeg)
-              if (dur === null) throw new HandoffError('bad-request', `无法读取片段时长: ${basename(p)}`)
-              if (dur < MIN_CLIP_SEC) throw new HandoffError('bad-request', `片段 ${basename(p)} 时长 ${dur}s < ${MIN_CLIP_SEC}s`)
+            if (!ffmpeg) throw new Error('未找到 ffmpeg，无法校验片段时长（可设 VGEN_FFMPEG）')
+            const checkDuration = async (file: string): Promise<void> => {
+              const dur = await probe(file, ffmpeg)
+              if (dur === null) throw new HandoffError('bad-request', `无法读取片段时长: ${basename(file)}`)
+              if (dur < MIN_CLIP_SEC) throw new HandoffError('bad-request', `片段 ${basename(file)} 时长 ${dur}s < ${MIN_CLIP_SEC}s`)
             }
+            for (const p of planned) await checkDuration(p.src)
+            // 此前已在位的 clip（非本次注入）同样过时长关，保持旧校验强度
+            for (const p of clipFiles) {
+              if (!planned.some((q) => q.dest === p)) await checkDuration(p)
+            }
+            mkdirSync(dest, { recursive: true, mode: 0o700 })
+            for (const p of planned) { copyFileSync(p.src, p.dest); ingested++ }
             clipFiles.sort()
             ctx.runs.appendEvent(runId, 'clips', { files: clipFiles })
           } else {
