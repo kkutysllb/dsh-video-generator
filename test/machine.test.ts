@@ -214,12 +214,13 @@ test('M4: 服务端 400 时单次降级重提（无 size），size-fallback 事�
     s.runs.setStage(s.run.id, 'master-asset', 'done')
     const r = await advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'shot-assets', providers, confirmer: async () => true, ffmpeg: null })
     assert.equal(r.stages['shot-assets'], 'done')
-    assert.ok(submitSpecs.length >= 4) // 3 镜 ×（带 size 400 + 无 size 重提）
+    assert.equal(submitSpecs.length, 6) // 3 镜 ×（带 size 400 + 无 size 重提），降级只发生一次
+    assert.equal(submitSpecs.filter((x) => x['size'] !== undefined).length, 3)
+    assert.equal(submitSpecs.filter((x) => x['size'] === undefined).length, 3)
     const shotSpec = submitSpecs.find((x) => x['size'] !== undefined)
     assert.equal(shotSpec?.['size'], '1024x1536')
-    assert.equal(submitSpecs.filter((x) => x['size'] === undefined).length, 3)
     const fb = s.runs.get(s.run.id)!.events.filter((e) => e.type === 'size-fallback')
-    assert.ok(fb.length >= 1, '事件流应含 size-fallback')
+    assert.equal(fb.length, 3, '每镜各落一笔 size-fallback')
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }

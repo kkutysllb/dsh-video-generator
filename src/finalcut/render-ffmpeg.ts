@@ -52,6 +52,7 @@ export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: st
     const out = join(opts.workDir, `norm-${String(i).padStart(3, '0')}.mp4`)
     const args = [
       '-y', '-i', c.src,
+      // 覆盖式缩放 + 中心裁切（消黑边）。注意：width/height 须为偶数——crop 后直接 format=yuv420p + libx264，奇数画布会报 "width not divisible by 2"
       '-vf', `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=${fps},format=yuv420p`,
       '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
       out,
