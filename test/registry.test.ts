@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { providerForModel } from '../src/registry.ts'
 
-const CHANNEL = { id: 've', baseUrl: 'https://x.example/v1', apiKey: 'sk-test-123456' }
+const CHANNEL = { id: 've', baseUrl: 'https://x.example', apiKey: 'sk-test-123456' }
 
 test('registry 按模型名路由到正确适配器', () => {
   const img = providerForModel(CHANNEL, 'doubao-seedream-4-0-250828')
