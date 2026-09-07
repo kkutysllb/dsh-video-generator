@@ -91,10 +91,11 @@ export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: st
       const delayMs = Math.max(0, Math.round(a.startUs / 1000))
       const durSec = a.durationUs !== undefined ? (a.durationUs / 1e6).toFixed(3) : null
       const vol = a.volume ?? 1
+      // 顺序关键：先 atrim 裁源时长，再 adelay 延迟到位——反序会把延迟后位置的语音裁成静音（M3b 真机教训）
       let chain = `[${idx}:a]aresample=44100`
-      if (delayMs > 0) chain += `,adelay=${delayMs}|${delayMs}`
       if (durSec !== null) chain += `,atrim=0:${durSec}`
       if (vol !== 1) chain += `,volume=${vol}`
+      if (delayMs > 0) chain += `,adelay=delays=${delayMs}:all=1`
       parts.push(`${chain}[na${i}]`)
       mixed.push(`[na${i}]`)
     })
