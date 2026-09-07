@@ -158,6 +158,44 @@ MVP 单通道单 key，不做多账号轮换；保留退避冷却 + 用量记账
 
 **修正**：LLM 三段真实现（结构化校验落盘）；gate 真实现；runs 持久化 + 断点恢复；异步 run 模型替代同步长轮询；轮询超时记失败；token 缓存过期刷新；成本护栏（三层查价 + 确认阈值）；fetch 全带超时/中止；零硬编码路径与零站点硬编码；MVP 不上重型前端依赖。
 
-## 附录 B：首通道（向量引擎）实测记录（M0 产出）
+## 附录 B：首通道（向量引擎）实测记录（M0 产出，2026-09-06）
 
-> M0 执行后填写：可用图像/视频模型清单、视频任务端点与请求/响应结构、轮询语义、计费实测、内置目录缺省值依据。此附录是内置目录初版的数据来源；通道本身在产品中完全由用户自配，不依赖本附录。
+> 此附录是内置目录初版的数据来源；通道本身在产品中完全由用户自配，不依赖本附录。
+
+### B.1 网络可达性
+
+| 域名 | 结果 |
+|---|---|
+| `api.vectorengine.ai` | DNS 正常（103.214.168.106），但 **TCP 直连超时**（作者网络环境；DNS 解析存疑时建议用户换 `.cn`） |
+| `api.vectorengine.cn` | **可达**（未鉴权 `/v1/models` 返回 401，符合预期） |
+
+结论：作者实例自配用 `.cn`；插件不绑定域名，M0 后所有探测与开发基于 `.cn`。
+
+### B.2 模型清单（`GET /v1/models` → 200，共 536 个）
+
+- **视频**：kling 系（kling-3.0-turbo / kling-video / kling-omni-video / kling-motion-control / kling-video-extend）、MiniMax-Hailuo-02 / 2.3、万相 wan2.5-i2v-preview / wan2.6-i2v / wan2.6-i2v-flash、vidu 系（viduq1/q2/q3 及 pro/turbo/mix 变体）、pixverse-video、grok-imagine-video-1.5、happyhorse-1.x t2v/i2v
+- **图像**：doubao-seedream 3.0 / 4.0 / 4.5 / 5.0 / 5.0-pro、gpt-image-1 / 1.5 / 2、qwen-image 系（max/plus/edit）、wan2.7-image(-pro)、z-image-turbo、grok-imagine-image、pixverse-image-template
+- **TTS**：gpt-4o-mini-tts、qwen-tts、MiniMax-Voice-Clone / Voice-Design 等
+- **不在列**：seedance、sora、flux、midjourney proxy、即梦——漫剧主图替代方案为 seedream 5.0-pro / qwen-image-max
+
+### B.3 视频任务端点候选（POST 探测，模型名 `__vgen_probe_nonexistent__`，未产生计费任务）
+
+| 路径 | 状态 | 判定 |
+|---|---|---|
+| `/v1/videos` | **503** | 路由存在（上游通道暂不可用/无可用渠道），**候选 1** |
+| `/v1/video/generations` | **503** | 同上，**候选 2** |
+| `/v1/video/submit` | 404 | 不存在 |
+| `/v1/generations` | 404 | 不存在 |
+
+M2 待办：用最小真实生成任务对两个候选做一次钉契约测试（请求体字段名、任务对象结构、轮询语义、计费实测），确认后删除落选者。
+
+### B.4 内置目录定稿依据
+
+- tts 组提至最前（`vidu-tts` 不能被 `vidu` 家族词抢走）；video 组新增 `i2v`/`t2v`/`pixverse`/`happyhorse`；image 组新增 `t2i`/`wanx`
+- **`wan2` 宽前缀从 video 组移除**（`wan2.7-image` 是图像模型）；万相系靠产出物词根区分：`i2v`/`t2v` → video，`image`/`t2i` → image
+- 回归用例：`test/model-catalog.test.ts`「M0 实测家族归档」14 项断言
+
+### B.5 安全备注
+
+- key 仅存 vault / 环境变量；本次 M0 在对话中出现过明文 key，**已建议作者在中转站后台重置**
+- `probe.ok` 只证明 `/models` 可达且返回清单；部分中转不校验该端点的 token，不能等同生成端点鉴权证明（M2 真实任务测试补此结论）

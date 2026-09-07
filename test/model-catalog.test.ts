@@ -48,3 +48,23 @@ test('builtin 注入：顺序决定混合命名归档（video 组须最前）', 
   ]
   assert.equal(resolveModel('image-to-video-model', undefined, rules).entry.kind, 'video')
 })
+
+test('M0 实测家族归档（向量引擎 536 模型清单，见规格附录 B）', () => {
+  // 万相系：i2v/t2v 是视频，image/t2i 是图像——'wan2' 宽前缀不得进 video 组
+  assert.equal(resolveModel('wan2.6-i2v').entry.kind, 'video')
+  assert.equal(resolveModel('wan2.5-i2v-preview').entry.kind, 'video')
+  assert.equal(resolveModel('wan2.7-image').entry.kind, 'image')
+  assert.equal(resolveModel('wanx2.1-t2i-turbo').entry.kind, 'image')
+  // 名字带 tts 的必是语音，不被 vidu 等家族词抢走
+  assert.equal(resolveModel('vidu-tts').entry.kind, 'tts')
+  assert.equal(resolveModel('MiniMax-Voice-Clone').entry.kind, 'tts')
+  // 实测在列的视频/图像家族
+  assert.equal(resolveModel('kling-3.0-turbo').entry.kind, 'video')
+  assert.equal(resolveModel('MiniMax-Hailuo-2.3').entry.kind, 'video')
+  assert.equal(resolveModel('viduq2-pro').entry.kind, 'video')
+  assert.equal(resolveModel('pixverse-video').entry.kind, 'video')
+  assert.equal(resolveModel('happyhorse-1.1-t2v').entry.kind, 'video')
+  assert.equal(resolveModel('doubao-seedream-4-0-250828').entry.kind, 'image')
+  assert.equal(resolveModel('qwen-image-edit-max').entry.kind, 'image')
+  assert.equal(resolveModel('z-image-turbo').entry.kind, 'image')
+})

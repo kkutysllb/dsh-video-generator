@@ -17,11 +17,13 @@ interface BuiltinRule extends CatalogEntry {
 const VIDEO: ProviderCapabilities = { imageToVideo: true, textToVideo: true, maxDurationSec: 10, qualityTier: 5 }
 const IMAGE: ProviderCapabilities = { image: true, qualityTier: 5 }
 
-// 顺序敏感：video 组必须最前——通用词 'video' 优先消解 'image-to-video-*' 类混合命名（ModelKind 表达产出物形态，输入模态由 capabilities 位表达）。新增规则前先想清楚摆放位置。
+// 顺序敏感（M0 实测定稿，见规格附录 B）：tts 组最先——名字带 tts/voice/speech 的必是语音模型（如 vidu-tts 不能被 vidu 抢走）；
+// video 组第二——通用词 'video'/'i2v'/'t2v' 消解 'image-to-video-*' 类混合命名；image 组最后。
+// 注意：不要把 'wan2' 这类宽前缀放进 video 组——'wan2.7-image' 是图像模型，万相系靠 'i2v'/'t2v' 与 'image'/'t2i' 区分。
 export const BUILTIN_CATALOG: BuiltinRule[] = [
-  { patterns: ['seedance', 'kling', 'wan2', 'wan-x', 'hailuo', 'sora', 'vidu', 'video'], kind: 'video', capabilities: VIDEO, qualityTier: 5 },
-  { patterns: ['seedream', 'flux', 'mj', 'midjourney', 'dall', 'sd3', 'image', 'banana'], kind: 'image', capabilities: IMAGE, qualityTier: 5 },
   { patterns: ['tts', 'speech', 'voice'], kind: 'tts', capabilities: { tts: true }, qualityTier: 5 },
+  { patterns: ['seedance', 'kling', 'wan-x', 'hailuo', 'sora', 'vidu', 'pixverse', 'happyhorse', 'video', 'i2v', 't2v'], kind: 'video', capabilities: VIDEO, qualityTier: 5 },
+  { patterns: ['seedream', 'flux', 'mj', 'midjourney', 'dall', 'sd3', 'image', 'banana', 't2i', 'wanx'], kind: 'image', capabilities: IMAGE, qualityTier: 5 },
 ]
 
 export interface ResolvedModel {
