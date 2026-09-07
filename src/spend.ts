@@ -1,8 +1,8 @@
 /** 消费记账（JSONL 追加，幂等崩溃安全）+ 预算确认判定（规格 §4.4）。 */
 
-import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 export interface SpendEntry {
   at: string
@@ -27,7 +27,9 @@ export class SpendLedger {
 
   record(entry: Omit<SpendEntry, 'at'>): void {
     const line = JSON.stringify({ ...entry, at: new Date().toISOString() })
+    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 })
     appendFileSync(this.file, line + '\n', { mode: 0o600 })
+    chmodSync(this.file, 0o600)
   }
 
   totals(): { count: number; estCny: number } {
@@ -48,8 +50,9 @@ export class SpendLedger {
   }
 }
 
-/** 估算超过阈值 -> 注入的 confirmer 决定；估不出（null）不拦截但必须已记账。 */
-export function confirmSpend(estCny: number | null, thresholdCny: number, confirmer: (est: number) => boolean): boolean {
-  if (estCny === null || estCny <= thresholdCny) return true
+/** 估价未知（null）按规格 §4.4 一律走确认（confirmer 收到 'unknown'）；超阈值走确认；其余放行。 */
+export function confirmSpend(estCny: number | null, thresholdCny: number, confirmer: (est: number | 'unknown') => boolean): boolean {
+  if (estCny === null) return confirmer('unknown')
+  if (estCny <= thresholdCny) return true
   return confirmer(estCny)
 }

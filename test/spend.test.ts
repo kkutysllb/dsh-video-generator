@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SpendLedger, confirmSpend } from '../src/spend.ts'
@@ -25,14 +25,23 @@ test('记账追加 JSONL 且 totals 汇总', () => {
   }
 })
 
-test('confirmSpend：超阈值需确认；无估价(0)放行但记账', () => {
+test('confirmSpend：超阈值需确认；null 估价一律走确认（规格 §4.4）', () => {
   assert.equal(confirmSpend(0.2, 1, () => true), true)
   assert.equal(confirmSpend(2, 1, () => false), false)
-  assert.equal(confirmSpend(0, 1, () => false), true) // 估不出价的（0）不拦截，由记录兜底
-  const { dir, ledger } = tmpLedger()
+  assert.equal(confirmSpend(0, 1, () => false), true) // 0 估价（估不出价的）不拦截，由记录兜底
+  assert.equal(confirmSpend(null, 1, () => false), false) // null 估价（接口故障）一律走确认
+  assert.equal(confirmSpend(null, 1, (est) => est === 'unknown'), true)
+})
+
+test('全新目录首笔记账不崩（自动建目录）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-spend-'))
   try {
-    ledger.record({ channel: 've', model: 'm', kind: 'video', estCny: null, jobId: 'j' })
-    assert.ok(existsSync(join(dir, 'spend.jsonl')))
+    const ledger = new SpendLedger(join(dir, 'sub', 'spend.jsonl'))
+    ledger.record({ channel: 've', model: 'm', kind: 'image', estCny: 0.1, jobId: 'j' })
+    assert.ok(existsSync(join(dir, 'sub', 'spend.jsonl')))
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(join(dir, 'sub', 'spend.jsonl')).mode & 0o777, 0o600)
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
