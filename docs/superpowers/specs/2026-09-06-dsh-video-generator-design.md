@@ -178,24 +178,45 @@ MVP 单通道单 key，不做多账号轮换；保留退避冷却 + 用量记账
 - **TTS**：gpt-4o-mini-tts、qwen-tts、MiniMax-Voice-Clone / Voice-Design 等
 - **不在列**：seedance、sora、flux、midjourney proxy、即梦——漫剧主图替代方案为 seedream 5.0-pro / qwen-image-max
 
-### B.3 视频任务端点候选（POST 探测，模型名 `__vgen_probe_nonexistent__`，未产生计费任务）
+### B.3 图像契约（已钉死，2026-09-07 实测）
 
-| 路径 | 状态 | 判定 |
-|---|---|---|
-| `/v1/videos` | **503** | 路由存在（上游通道暂不可用/无可用渠道），**候选 1** |
-| `/v1/video/generations` | **503** | 同上，**候选 2** |
-| `/v1/video/submit` | 404 | 不存在 |
-| `/v1/generations` | 404 | 不存在 |
+`POST {base}/v1/images/generations`，`Authorization: Bearer`：
+- 请求：`{model, prompt, n:1, size:"1024x1024"}`（seedream 可能忽略 size，实测返回 `size:"2k"`）
+- 响应 200：OpenAI 兼容信封 `{created, model, data:[{url, size}], usage:{generated_images, output_tokens, total_tokens}}`
+- **交付为签名 URL**（volces TOS，有效期 7 天）→ **适配器必须及时下载落盘**，不得只存 URL
+- 实测模型 `doubao-seedream-4-0-250828`（价目见 B.5：0.2/次档）
 
-M2 待办：用最小真实生成任务对两个候选做一次钉契约测试（请求体字段名、任务对象结构、轮询语义、计费实测），确认后删除落选者。
+### B.4 视频契约（已钉死，端到端真实出片）
 
-### B.4 内置目录定稿依据
+**中转站是多协议原生透传网关**——各家族走各家原生协议，选错路径时 400 报错会自报专属路径：
+
+| 家族 | 路径 | 协议 | 状态 |
+|---|---|---|---|
+| wan / happyhorse | `/alibailian/api/v1/services/aigc/video-generation/video-synthesis` | DashScope 原生异步 | **✅ 端到端钉死** |
+| kling | `/kling-compat/v1/videos/*`（如 `/text2video`） | Kling 原生 | 路径确认；当时无可用渠道，成功信封待补（M2 带重试钉） |
+| vidu | `/ent/...` | VIDU 原生 | 路径确认，M3+ |
+| pixverse | `/openapi/...` | PixVerse 原生 | 路径确认，M3+ |
+| grok 等通用 | `/v1/videos` | 通用路由（grok 被接受，429 上游饱和） | 成功信封待补（M2 带重试钉） |
+
+**DashScope 原生异步全生命周期（实测 94 秒出片）**：
+- 提交：`POST {base}/alibailian/api/v1/services/aigc/video-generation/video-synthesis`，头 `X-DashScope-Async: enable`，体 `{model:"happyhorse-1.1-t2v", input:{prompt}, parameters:{duration:5}}` → 200 `{"output":{"task_id":"task_...","task_status":"PENDING"},"request_id":"..."}`
+- 轮询：`GET {base}/alibailian/api/v1/tasks/{task_id}` → `output.task_status: PENDING → RUNNING → SUCCEEDED`；SUCCEEDED 时 `output.video_url`（阿里 OSS 签名直链，带 Expires → 须及时下载）+ `usage:{duration:5, video_count:1, ratio:"16:9", SR:1080}`
+- 成片核验：h264 1920×1080 24fps + aac，5.16s，4.8MB
+- **M2 复用结论**：鲸影式 DashScope 工厂（video-synthesis + `X-DashScope-Async` + `tasks/{id}` 轮询）只需换 base 前缀（`/alibailian`）与 Bearer 鉴权即可直用
+
+### B.5 价目数据（`GET {base}/api/pricing` 公开可读）
+
+- 信封 `{data:[{model_name, model_type, quota_type, model_ratio, model_price, ...}]}`；`quota_type=1` 按次（`model_price`），`quota_type=0` 按量（`model_ratio` × tokens）
+- 关键档位（`model_price` 原始值，**计价单位口径待 M2 用余额差值钉死**）：seedream 3.0/4.0/4.5/5.0 = 0.10/0.20/0.25/0.22；z-image-turbo = 0.10；qwen-image-max = 0.5；kling-video = 0.017；happyhorse-1.1-t2v = 0.013；pixverse-video = 0.014；grok-imagine-video = 0.01；**wan2.6-i2v = 1.0（贵，避用）**
+- 成本护栏升级：`quote()` 优先拉 `/api/pricing` 做真实估价，替代 unknown→确认
+
+### B.6 内置目录定稿依据
 
 - tts 组提至最前（`vidu-tts` 不能被 `vidu` 家族词抢走）；video 组新增 `i2v`/`t2v`/`pixverse`/`happyhorse`；image 组新增 `t2i`/`wanx`
 - **`wan2` 宽前缀从 video 组移除**（`wan2.7-image` 是图像模型）；万相系靠产出物词根区分：`i2v`/`t2v` → video，`image`/`t2i` → image
 - 回归用例：`test/model-catalog.test.ts`「M0 实测家族归档」14 项断言
 
-### B.5 安全备注
+### B.7 安全备注
 
 - key 仅存 vault / 环境变量；本次 M0 在对话中出现过明文 key，**已建议作者在中转站后台重置**
 - `probe.ok` 只证明 `/models` 可达且返回清单；部分中转不校验该端点的 token，不能等同生成端点鉴权证明（M2 真实任务测试补此结论）
