@@ -44,6 +44,10 @@ function wire(env: NodeJS.ProcessEnv) {
   // 故 wire 期间临时注入 DSH_HOME，结束即还原，避免测试污染真实 HOME。
   const prevHome = process.env['DSH_HOME']
   if (env['DSH_HOME'] !== undefined) process.env['DSH_HOME'] = env['DSH_HOME']
+  // ensurePresetInstalled 走 homedir()（POSIX 动态读 HOME）：wire 期间一并重定向到 DSH_HOME 同款 tmp，
+  // 避免每次 apply 测试都把预设幂等写入真实 ~/.dsh/.kcoder（会静默回滚用户手工定制的预设）
+  const prevUserProfile = process.env['HOME']
+  if (env['DSH_HOME'] !== undefined) process.env['HOME'] = env['DSH_HOME']
 
   const routes = new Map<string, RegisteredRoute>()
   const effects: string[] = []
@@ -85,6 +89,8 @@ function wire(env: NodeJS.ProcessEnv) {
 
   if (prevHome === undefined) delete process.env['DSH_HOME']
   else process.env['DSH_HOME'] = prevHome
+  if (prevUserProfile === undefined) delete process.env['HOME']
+  else process.env['HOME'] = prevUserProfile
   return { routes, effects, registeredTools, sections, dispose, disposers }
 }
 
