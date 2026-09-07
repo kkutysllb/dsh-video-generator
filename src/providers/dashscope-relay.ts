@@ -42,7 +42,7 @@ export function createDashscopeRelayProvider(ch: DashscopeChannel, fetchImpl: ty
   const isI2v = ch.model.toLowerCase().includes('i2v')
   const provider: Provider = {
     id: `dashscope-relay:${ch.model}`,
-    capabilities: { textToVideo: !isI2v, imageToVideo: true, maxDurationSec: 10, qualityTier: 5 },
+    capabilities: { textToVideo: !isI2v, imageToVideo: isI2v, maxDurationSec: 10, qualityTier: 5 },
     async quote(_stage) {
       const est = ch.estimate?.(ch.model) ?? null
       return { qualityTier: 5, costEstimate: est ?? 0, currency: 'CNY' }
