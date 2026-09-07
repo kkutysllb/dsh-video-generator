@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pollUntil } from '../src/poll.ts'
+import { pollUntil, retryTransient } from '../src/poll.ts'
 import { RelayError } from '../src/providers/relay-http.ts'
 
 interface St {
@@ -44,5 +44,23 @@ test('pollUntil：总超时后抛错（引用最后一次错误）', async () =>
       { isFinal: (s) => s.state === 'done', delayMs: 1, maxPollMs: 50 },
     ),
     /轮询超时/,
+  )
+})
+
+test('retryTransient：瞬时错误重试后成功；非瞬时立即抛', async () => {
+  let calls = 0
+  const r = await retryTransient(
+    async () => {
+      calls++
+      if (calls === 1) throw new RelayError(0, 'network')
+      return 'ok'
+    },
+    3, 1,
+  )
+  assert.equal(r, 'ok')
+  assert.equal(calls, 2)
+  await assert.rejects(
+    retryTransient(async () => { throw new RelayError(400, '参数错') }, 3, 1),
+    (e: unknown) => (e as { status?: number }).status === 400,
   )
 })

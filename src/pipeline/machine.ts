@@ -13,7 +13,7 @@ import type { Provider } from '../provider.ts'
 import { estimateCny, type PricingTable } from '../pricing.ts'
 import { buildCharacterSheetPrompt, buildScenePrompt, buildShotPrompt } from '../prompts.ts'
 import { STAGES, type StageId } from '../stages.ts'
-import { pollUntil } from '../poll.ts'
+import { pollUntil, retryTransient } from '../poll.ts'
 import { buildTimeline, writeSrt, type TimelineData, Timeline } from '../finalcut/timeline.ts'
 import { renderTimeline, probeDurationSec } from '../finalcut/render-ffmpeg.ts'
 import { resolveVoice, buildMacSayCommand, buildSapiScript } from '../finalcut/voice.ts'
@@ -58,7 +58,7 @@ function lastEvent(events: RunEvent[], type: string): RunEvent | undefined {
 }
 
 async function saveUrl(fetchImpl: typeof fetch, url: string, file: string): Promise<void> {
-  const res = await fetchImpl(url)
+  const res = await fetchImpl(url, { signal: AbortSignal.timeout(120000) })
   if (!res.ok) throw new Error(`下载失败 http-${res.status}`)
   writeFileSync(file, Buffer.from(await res.arrayBuffer()), { mode: 0o600 })
 }
@@ -167,7 +167,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         await pump(jobs, deps.concurrency ?? 2, async (job) => {
           const est = deps.pricing ? estimateCny(imageModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'image'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
-          const { jobId: url } = await p.submit(st, { prompt: job.prompt })
+          const { jobId: url } = await retryTransient(() => p.submit(st, { prompt: job.prompt }))
           runs.appendEvent(runId, 'spend', { stage: st, model: imageModel, estCny: est, jobId: String(url).slice(0, 80) })
           await saveUrl(fetchImpl, url, job.file)
           urls.push({ key: job.file, url })
@@ -208,7 +208,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           })
           const est = deps.pricing ? estimateCny(imageModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'image'))) throw new Error(`用户取消（shot ${shot.index}）`)
-          const { jobId: url } = await p.submit(st, { prompt: merged.positive })
+          const { jobId: url } = await retryTransient(() => p.submit(st, { prompt: merged.positive }))
           runs.appendEvent(runId, 'spend', { stage: st, model: imageModel, estCny: est, shot: shot.index, jobId: String(url).slice(0, 80) })
           const file = join(shotsDir, `shot-${String(shot.index).padStart(3, '0')}.png`)
           await saveUrl(fetchImpl, url, file)
@@ -250,11 +250,11 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           const durationSec = sb.shots.find((s) => s.index === shot.index)?.durationSec ?? 5
           const est = deps.pricing ? estimateCny(videoModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'video'))) throw new Error(`用户取消（shot ${shot.index}）`)
-          const { jobId } = await p.submit(st, {
+          const { jobId } = await retryTransient(() => p.submit(st, {
             prompt: '镜头缓慢推进，主体自然运动，电影感光影',
             imageUrl: shot.url,
             durationSec,
-          })
+          }))
           runs.appendEvent(runId, 'spend', { stage: st, model: videoModel, estCny: est, shot: shot.index, jobId: String(jobId).slice(0, 80) })
           const finalState = await pollUntil(
             () => p.status(String(jobId)),

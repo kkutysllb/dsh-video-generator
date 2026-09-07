@@ -51,7 +51,7 @@ async function requestJson<T>(fetchImpl: FetchImpl, url: string, apiKey: string,
   }
 }
 
-export function postJson<T = Record<string, unknown>>(url: string, apiKey: string, body: unknown, fetchImpl: FetchImpl = fetch, timeoutMs = 60000): Promise<T> {
+export function postJson<T = Record<string, unknown>>(url: string, apiKey: string, body: unknown, fetchImpl: FetchImpl = fetch, timeoutMs = 120000): Promise<T> {
   return requestJson<T>(fetchImpl, url, apiKey, {
     method: 'POST',
     headers: { ...authHeaders(apiKey), 'content-type': 'application/json' },
