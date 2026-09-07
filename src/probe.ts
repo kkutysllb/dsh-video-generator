@@ -1,4 +1,5 @@
 /** 通道探测：/models 枚举 + 鉴权校验。开发前置（M0 实测）与产品"测试通道"共用。 */
+// 拓扑契约：probe 入参 baseUrl 为站点根（与通道 baseUrl 一致）；OpenAI 兼容 /models 挂 /v1。
 // 注意：probe.ok 只代表 /models 可达且返回了模型清单；部分中转不校验 /models 的 token，不能等同生成端点的鉴权/可用性证明。
 
 export interface ProbeTarget {
@@ -22,7 +23,7 @@ export async function probeChannel(
   timeoutMs = 15000,
 ): Promise<ProbeResult> {
   const base = target.baseUrl.trim().replace(/\/+$/, '')
-  const url = `${base}/models`
+  const url = `${base}/v1/models`
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), timeoutMs)
   try {
