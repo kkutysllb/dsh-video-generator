@@ -1,4 +1,5 @@
 /** ffmpeg 渲染通道：归一化（scale/pad/fps）→ concat → drawtext 字幕 → 混音（规格 §5 成片链路）。 */
+// 归一化 -an 会丢弃 clip 自带音轨；配音一律走 timeline.audio 通道。
 
 import { execFile } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
@@ -34,7 +35,17 @@ export function pickFontFile(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null
 }
 
+/** drawtext 缺失检测：Homebrew 精简构建等场景 ffmpeg 会报 `No such filter: 'drawtext'`。 */
+export function drawtextMissing(stderr: string): boolean {
+  return /No such filter:\s*'drawtext'/.test(stderr)
+}
+
+const DRAWTEXT_HINT = '当前 ffmpeg 缺少 drawtext 滤镜（Homebrew 精简构建常见）：请设置环境变量 VGEN_FFMPEG 指向含 libfreetype 的完整构建，或安装 ffmpeg 完整版'
+/** 通用合成失败尾部引导：保证用户在 drawtext 缺失时总能看到出路。 */
+const COMPOSITE_HINT = "｜排查提示：若上方 stderr 含 No such filter: 'drawtext'，说明当前 ffmpeg 缺少 drawtext 滤镜（Homebrew 精简构建常见）：请设置环境变量 VGEN_FFMPEG 指向含 libfreetype 的完整构建，或安装 ffmpeg 完整版"
+
 export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: string; workDir: string; subtitles?: boolean; fontFile?: string | null }): RenderPlan {
+  if (t.clips.length === 0) throw new Error('时间线没有 clip，无法渲染')
   mkdirSync(opts.workDir, { recursive: true })
   const { width, height, fps } = t.canvas
   const normalize = t.clips.map((c, i) => {
@@ -127,8 +138,13 @@ export async function renderTimeline(t: Timeline, outPath: string, opts: { subti
       if (!r.ok) return { ok: false, error: `归一化失败: ${r.stderr}` }
     }
     const r = await runOne(ffmpeg, plan.composite.args, 600000)
-    if (!r.ok) return { ok: false, error: `合成失败: ${r.stderr}` }
+    if (!r.ok) {
+      if (drawtextMissing(r.stderr)) return { ok: false, error: DRAWTEXT_HINT }
+      return { ok: false, error: `合成失败: ${r.stderr}${COMPOSITE_HINT}` }
+    }
     return { ok: true, output: outPath }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
   } finally {
     try { rmSync(workDir, { recursive: true, force: true }) } catch { /* 清理失败不阻塞 */ }
   }

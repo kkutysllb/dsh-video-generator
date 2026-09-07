@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, existsSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildRenderPlan, renderTimeline, locateFfmpeg, probeDurationSec } from '../src/finalcut/render-ffmpeg.ts'
+import { buildRenderPlan, renderTimeline, locateFfmpeg, probeDurationSec, drawtextMissing } from '../src/finalcut/render-ffmpeg.ts'
 import { Timeline } from '../src/finalcut/timeline.ts'
 
 function sampleTimeline(): Timeline {
@@ -18,31 +18,55 @@ function sampleTimeline(): Timeline {
 }
 
 test('buildRenderPlan：两阶段命令（逐 clip 归一化 + concat/drawtext/amix 合成）', () => {
-  const plan = buildRenderPlan(sampleTimeline(), '/out/final.mp4', { ffmpeg: '/usr/bin/ffmpeg', workDir: '/tmp/work', subtitles: true })
-  assert.equal(plan.normalize.length, 2)
-  assert.ok(plan.normalize[0]!.args.includes('-vf'))
-  assert.ok(plan.normalize[0]!.args.some((a) => a.includes('scale=1080:1920')))
-  const fc = plan.composite.args[plan.composite.args.indexOf('-filter_complex') + 1] as string
-  assert.ok(fc.includes('concat=n=2'))
-  assert.ok(fc.includes("drawtext=text='第一句'"))
-  assert.ok(fc.includes('amix'))
-  assert.ok(plan.composite.args.includes('-map'))
-  const maps = plan.composite.args.filter((a) => a === '-map')
-  assert.equal(maps.length, 2) // 视频 + 音频
+  const workDir = mkdtempSync(join(tmpdir(), 'vgen-test-'))
+  try {
+    const plan = buildRenderPlan(sampleTimeline(), '/out/final.mp4', { ffmpeg: '/usr/bin/ffmpeg', workDir, subtitles: true })
+    assert.equal(plan.normalize.length, 2)
+    assert.ok(plan.normalize[0]!.args.includes('-vf'))
+    assert.ok(plan.normalize[0]!.args.some((a) => a.includes('scale=1080:1920')))
+    const fc = plan.composite.args[plan.composite.args.indexOf('-filter_complex') + 1] as string
+    assert.ok(fc.includes('concat=n=2'))
+    assert.ok(fc.includes("drawtext=text='第一句'"))
+    assert.ok(fc.includes('amix'))
+    assert.ok(plan.composite.args.includes('-map'))
+    const maps = plan.composite.args.filter((a) => a === '-map')
+    assert.equal(maps.length, 2) // 视频 + 音频
+  } finally {
+    rmSync(workDir, { recursive: true, force: true })
+  }
 })
 
 test('drawtext 转义：引号/冒号/百分号', () => {
-  const t = new Timeline({ width: 320, height: 568, fps: 24 })
-  t.addClip('/a.mp4', 1_000_000)
-  t.addSubtitle("It's 100% ok: go", 0, 1_000_000)
-  const plan = buildRenderPlan(t, '/out/f.mp4', { ffmpeg: 'ffmpeg', workDir: '/tmp/w', subtitles: true })
-  const fc = plan.composite.args[plan.composite.args.indexOf('-filter_complex') + 1] as string
-  assert.ok(fc.includes("It\\'s 100\\% ok\\: go"))
+  const workDir = mkdtempSync(join(tmpdir(), 'vgen-test-'))
+  try {
+    const t = new Timeline({ width: 320, height: 568, fps: 24 })
+    t.addClip('/a.mp4', 1_000_000)
+    t.addSubtitle("It's 100% ok: go", 0, 1_000_000)
+    const plan = buildRenderPlan(t, '/out/f.mp4', { ffmpeg: 'ffmpeg', workDir, subtitles: true })
+    const fc = plan.composite.args[plan.composite.args.indexOf('-filter_complex') + 1] as string
+    assert.ok(fc.includes("It\\'s 100\\% ok\\: go"))
+  } finally {
+    rmSync(workDir, { recursive: true, force: true })
+  }
 })
 
 test('locateFfmpeg：env 优先', () => {
   assert.equal(locateFfmpeg({ VGEN_FFMPEG: '/custom/ffmpeg' } as NodeJS.ProcessEnv), '/custom/ffmpeg')
   assert.equal(locateFfmpeg({} as NodeJS.ProcessEnv), 'ffmpeg')
+})
+
+test('drawtextMissing：识别 No such filter: drawtext', () => {
+  assert.equal(drawtextMissing("Impossible to convert usage: Unrecognized option 'drawtext'"), false)
+  assert.equal(drawtextMissing('Error initializing filter: No such filter: \'drawtext\'\nError initializing complex filters.'), true)
+  assert.equal(drawtextMissing(''), false)
+})
+
+test('空 clip 守卫：buildRenderPlan 抛错且 renderTimeline 返回 ok:false', async () => {
+  const empty = new Timeline({ width: 1080, height: 1920, fps: 24 })
+  assert.throws(() => buildRenderPlan(empty, '/out/x.mp4', { ffmpeg: 'ffmpeg', workDir: '/tmp/never' }), /时间线没有 clip，无法渲染/)
+  const r = await renderTimeline(empty, '/out/x.mp4', { ffmpeg: 'ffmpeg' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error, '时间线没有 clip，无法渲染')
 })
 
 function supportsDrawtextFilter(bin: string): boolean {
