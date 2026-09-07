@@ -318,7 +318,7 @@ function tmpHome(): string {
 
 test('maskCredential 短串全遮、长串前3后3', () => {
   assert.equal(maskCredential('abc'), '••••')
-  assert.equal(maskCredential('sk-1234567890xyz'), 'sk-••••0xyz')
+  assert.equal(maskCredential('sk-1234567890xyz'), 'sk-••••xyz')
 })
 
 test('resolveVaultPath 跟随 DSH_HOME，无则回退 home', () => {
