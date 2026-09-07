@@ -5,6 +5,7 @@ import { VaultStore } from '../store/vault.ts'
 import { RunStore } from '../store/runs.ts'
 import { probeChannel } from '../probe.ts'
 import { buildHandoffTools, handoffToolDefs, type HandoffTools, type DshToolDefinition } from '../tools/handoff.ts'
+import { buildGenerateTools, generateToolDefs } from '../tools/generate.ts'
 import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest } from './routes.ts'
 
 export const name = PLUGIN_ID
@@ -17,7 +18,10 @@ export const vgenGuidance = `本机已安装 dsh-video-generator 插件（短视
 1) vgen_story 提交故事 JSON 开新 run：{ title, logline, style, characters: [{ id（^[a-z0-9_-]+$，≤48）, name, appearance }], chapters: [...] }，title ≤200、logline/appearance ≤500、characters ≤20、chapters ≤50（每条 ≤200）；
 2) vgen_script 提交剧本 JSON 挂到 runId：story 字段 + scenes: [{ id, name, description, characters: [id] }]、dialog: [{ sceneId, characterId, line }]，引用的 characterId/sceneId 必须存在，dialog ≤200 条；
 3) vgen_storyboard 提交分镜数组挂到 runId：每镜 { index（从 1 连续）, line（镜头台词）, prompt（手写画面描述）, characterIds: [id], sceneId?, camera?, durationSec 2..10, voiceHint? }，工具自动注入四层提示词（风格、运镜、角色锚、参考图提示）并落盘；
-未知 runId 报 not-found，缺字段/超限/引用错误报 bad-request（错误信封 { ok: false, error: { code, message } }）。`
+未知 runId 报 not-found，缺字段/超限/引用错误报 bad-request（错误信封 { ok: false, error: { code, message } }）。
+4) vgen_generate 推进非 LLM 段：{ runId, target: 'assets'|'video'|'final', confirm? }——assets 出角色三视图/场景主图/逐镜参考图，video 逐镜图生视频，final 配音并渲染成片 mp4+SRT；首次调用不带 confirm，若返回 confirm-required（error.code），先向用户转述成本再携带 confirm:true 重调；
+5) vgen_status { runId } 随时查进度（各段状态 + 最近事件）。`
+
 
 interface WebServerFace {
   register(route: {
@@ -65,8 +69,18 @@ export function apply(ctx: HostContext): () => void {
       ctx.systemPrompt!.section({ name: `plugin:${PLUGIN_ID}`, order: SECTION_ORDER, text: vgenGuidance }),
     )
   }
-  // 原生三工具：直接注册（super-ppts 模式，不用回调式 inject）。
-  for (const dispose of registerHandoffTools(ctx, buildHandoffTools({ vault, runs }))) {
+  // 原生工具：直接注册（super-ppts 模式，不用回调式 inject）。
+  const handoff = buildHandoffTools({ vault, runs })
+  const generateTools = buildGenerateTools({
+    vault, runs,
+    channel: () => {
+      const d = vault.load().defaultChannelId
+      const c = d ? vault.getChannel(d) : null
+      if (!c) throw new Error('未配置生成通道：请先在设置页「通道管理」添加通道')
+      return { id: c.id, baseUrl: c.baseUrl, apiKey: c.apiKey }
+    },
+  })
+  for (const dispose of [...registerHandoffTools(ctx, handoff), ...generateToolDefs(generateTools).map((def) => ctx.tools.register(def))]) {
     disposers.push(dispose)
   }
 
