@@ -1,6 +1,6 @@
 /** LLM 三段交接工具（规格 §5 表）：会话模型产出结构化 JSON → 校验 + 落盘 + run 推进。 */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { VaultStore } from '../store/vault.ts'
 import type { RunStore } from '../store/runs.ts'
@@ -99,7 +99,11 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
     storyboard: {
       execute: async (args) => wrap(() => {
         const runId = requireRun(runs, args?.['runId'])
-        const script = JSON.parse(readFileSync(join(runDir(runs, runId), 'script.json'), 'utf8')) as Record<string, unknown>
+        const scriptFile = join(runDir(runs, runId), 'script.json')
+        if (!existsSync(scriptFile)) {
+          throw new HandoffError('bad-request', `run ${runId} 尚无剧本：请先调用 vgen_script 提交 script`)
+        }
+        const script = JSON.parse(readFileSync(scriptFile, 'utf8')) as Record<string, unknown>
         const storyboard = validateStoryboard({
           shots: args?.['shots'],
           characters: script['characters'],

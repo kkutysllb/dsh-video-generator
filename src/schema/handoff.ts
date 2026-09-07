@@ -208,7 +208,7 @@ export function validateStoryboard(v: unknown): Storyboard {
   const r = asRecord(v, 'storyboard')
   const shotsRaw = r['shots']
   if (!Array.isArray(shotsRaw) || shotsRaw.length === 0) fail('storyboard.shots 须为非空数组')
-  if (shotsRaw.length > MAX.shots) fail(`storyboard.shots 数量超限：实际 ${shotsRaw.length}，上限 ${MAX.dialog}`)
+  if (shotsRaw.length > MAX.shots) fail(`storyboard.shots 数量超限：实际 ${shotsRaw.length}，上限 ${MAX.shots}`)
   const characters = parseCharacters(r['characters'], 'storyboard.characters', { requireNonEmpty: true })
   const scenes = parseScenes(r['scenes'], 'storyboard.scenes', { requireNonEmpty: false })
   const charIds = new Set(characters.map((c) => c.id))
