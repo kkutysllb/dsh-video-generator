@@ -36,7 +36,7 @@ DSH 原生视频生成插件：短视频/AI 短剧/漫剧管线，竖屏 9:16 �
 | `VGEN_TTS_INSTRUCTIONS` | 云端 TTS 旁白语气指令 | 未设 |
 | `VGEN_FFMPEG` | ffmpeg 可执行路径（须含 drawtext；Homebrew 精简构建常见缺失） | `ffmpeg`（PATH） |
 | `VGEN_POLL_DELAY_MS` | i2v 轮询间隔覆盖（demo 提速用） | 1000 |
-| `VGEN_VIDEO_MODEL` | 评审重拍所用视频模型覆盖 | 内置缺省 |
+| `VGEN_VIDEO_MODEL` | video 段与评审重拍的视频模型覆盖（上游分组饱和时换档，如 `wan2.6-i2v-flash`） | 内置缺省（happyhorse-1.1-i2v） |
 | `VGEN_ALLOW_INSECURE` | `=1` 允许 `http://` baseUrl（仅本地调试） | 未设（强制 https） |
 
 ## 画幅策略
