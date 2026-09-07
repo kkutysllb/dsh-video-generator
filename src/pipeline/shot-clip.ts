@@ -30,6 +30,7 @@ export interface ShotClipOptions {
 }
 
 export async function generateShotClip(o: ShotClipOptions): Promise<string> {
+  // stage 恒为 'video'：本序列仅用于视频模态（i2v），复用方不要拿它提交图像/TTS 任务
   const { jobId } = await retryTransient(() => o.provider.submit('video', {
     prompt: o.prompt,
     imageUrl: o.imageUrl,
