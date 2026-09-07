@@ -9,7 +9,8 @@ import type { MachineDeps } from '../pipeline/machine.ts'
 import { fetchPricing, estimateCny, type PricingTable } from '../pricing.ts'
 import { SpendLedger } from '../spend.ts'
 import { providerForModel } from '../registry.ts'
-import { advanceRun } from '../pipeline/machine.ts'
+import { advanceRun, ManualGateError, AskGateRejectedError } from '../pipeline/machine.ts'
+import { isStage } from '../stages.ts'
 import { locateFfmpeg } from '../finalcut/render-ffmpeg.ts'
 import type { CloudTtsConfig } from '../finalcut/voice.ts'
 import type { ToolResult } from './handoff.ts'
@@ -38,6 +39,12 @@ export interface GenerateArgs {
   target: 'assets' | 'video' | 'final'
   confirm?: boolean
   concurrency?: number
+  /** 每段 gate 模式覆盖（持久化进 run.json；优先级 = vault 缺省 < run.json < 本参数）。 */
+  gates?: Record<string, 'auto' | 'ask' | 'manual'>
+  /** ask gate 的本次放行清单（用户已在会话中批准后由会话模型带上）。 */
+  gateApprovals?: string[]
+  /** 把某个媒体段（master-asset/shot-assets/video/final-cut）重置 pending 后重跑。 */
+  rerunStage?: string
 }
 
 function mapTarget(target: string): MachineDeps['target'] {
@@ -57,15 +64,40 @@ export function buildGenerateTools(ctx: GenerateContext): {
       execute: async (args) => {
         let denied = 0
         try {
+          const runId = String(args['runId'] ?? '')
+          if (!ctx.runs.get(runId)) return { ok: false, error: { code: 'not-found', message: `run 不存在: ${runId}` } }
+          let argGates: Record<string, 'auto' | 'ask' | 'manual'> | undefined
+          if (args['gates'] !== undefined) {
+            const g = args['gates']
+            if (typeof g !== 'object' || g === null || Array.isArray(g)) return { ok: false, error: { code: 'bad-request', message: 'gates 须为对象 {段名: auto|ask|manual}' } }
+            argGates = {}
+            for (const [k, v] of Object.entries(g as Record<string, unknown>)) {
+              if (!isStage(k)) return { ok: false, error: { code: 'bad-request', message: `gates 键须为合法段名: ${k}` } }
+              if (v !== 'auto' && v !== 'ask' && v !== 'manual') return { ok: false, error: { code: 'bad-request', message: `gates[${k}] 须为 auto|ask|manual: ${String(v)}` } }
+              argGates[k] = v
+            }
+            ctx.runs.setGates(runId, argGates)
+          }
+          const MEDIA_STAGES = ['master-asset', 'shot-assets', 'video', 'final-cut']
+          if (args['rerunStage'] !== undefined) {
+            const rs = String(args['rerunStage'])
+            if (!MEDIA_STAGES.includes(rs)) return { ok: false, error: { code: 'bad-request', message: `rerunStage 须为媒体段（${MEDIA_STAGES.join('|')}）: ${rs}` } }
+            ctx.runs.setStage(runId, rs, 'pending')
+          }
+          const recGates = ctx.runs.get(runId)?.gates ?? {}
+          const effectiveGates = { ...ctx.vault.getGateDefaults(), ...recGates } as MachineDeps['gates']
+          const approvals = Array.isArray(args['gateApprovals']) ? (args['gateApprovals'] as unknown[]).filter((s): s is string => typeof s === 'string') : []
           const channel = ctx.channel()
           let pricingMaybe = ctx.pricing
           if (pricingMaybe === undefined) pricingMaybe = await fetchPricing(channel, undefined, 15000).catch(() => null)
           const pricing = pricingMaybe
           const r = await advanceRun({
             runs: ctx.runs,
-            runId: args['runId'],
+            runId,
             target: mapTarget(String(args['target'] ?? 'final')),
             channel,
+            gates: effectiveGates,
+            ask: async (stage) => approvals.includes(stage),
             providers: {
               forModel: (model, opts) =>
                 ctx.providersOverride
@@ -83,6 +115,8 @@ export function buildGenerateTools(ctx: GenerateContext): {
               return false
             },
             ffmpeg: locateFfmpeg(env),
+            // 视频模型覆盖：上游分组饱和时换档（如 happyhorse→wan2.6-i2v），缺省走 machine 内置
+            videoModel: env['VGEN_VIDEO_MODEL'] || undefined,
             tts: ctx.tts ?? (env['VGEN_TTS_MODEL'] ? { baseUrl: channel.baseUrl, apiKey: channel.apiKey, model: env['VGEN_TTS_MODEL'], voice: env['VGEN_TTS_VOICE'] || undefined, instructions: env['VGEN_TTS_INSTRUCTIONS'] || undefined } : undefined),
             concurrency: typeof args['concurrency'] === 'number' ? args['concurrency'] : undefined,
             fetchImpl: ctx.fetchImpl,
@@ -108,6 +142,12 @@ export function buildGenerateTools(ctx: GenerateContext): {
               },
             }
           }
+          if (err instanceof ManualGateError) {
+            return { ok: false, error: { code: 'manual-gate', message: `${err.message}。用法：vgen_provide { runId, stage, files: [{ path, shot?, name? }] }` } }
+          }
+          if (err instanceof AskGateRejectedError) {
+            return { ok: false, error: { code: 'gate-approval', message: `${err.message}。请与用户确认该段执行，然后携带 gateApprovals（如 ["master-asset"]）重新调用；或改 gates 为 auto/manual。` } }
+          }
           if (err instanceof HandoffError) return { ok: false, error: { code: err.code, message: err.message } }
           return { ok: false, error: { code: 'internal', message: err instanceof Error ? err.message : String(err) } }
         }
@@ -119,7 +159,11 @@ export function buildGenerateTools(ctx: GenerateContext): {
         if (!record) return { ok: false, error: { code: 'not-found', message: `run 不存在: ${args?.['runId']}` } }
         return {
           ok: true,
-          value: { id: record.id, title: record.title, status: record.status, stages: record.stages, recentEvents: record.events.slice(-5) },
+          value: {
+            id: record.id, title: record.title, status: record.status, stages: record.stages,
+            gates: record.gates ?? {}, reviews: record.reviews ?? {},
+            recentEvents: record.events.slice(-5),
+          },
         }
       },
     },
@@ -146,6 +190,9 @@ export function generateToolDefs(
           target: { type: 'string', enum: ['assets', 'video', 'final'], description: '推进目标段（含其前序段）' },
           confirm: { type: 'boolean', description: '成本确认；仅在向用户转述成本后置 true' },
           concurrency: { type: 'number', description: '并发数，默认 2' },
+          gates: { type: 'object', description: '可选：每段 gate 模式 {段名: "auto"|"ask"|"manual"}，持久化进 run.json' },
+          gateApprovals: { type: 'array', description: '可选：ask 段本次放行清单（用户已批准后携带）' },
+          rerunStage: { type: 'string', enum: ['master-asset', 'shot-assets', 'video', 'final-cut'], description: '可选：重置该媒体段为 pending 后重跑' },
         },
         required: ['runId', 'target'],
       },

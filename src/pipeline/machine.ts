@@ -13,7 +13,9 @@ import type { Provider } from '../provider.ts'
 import { estimateCny, type PricingTable } from '../pricing.ts'
 import { buildCharacterSheetPrompt, buildScenePrompt, buildShotPrompt } from '../prompts.ts'
 import { STAGES, type StageId } from '../stages.ts'
-import { pollUntil, retryTransient } from '../poll.ts'
+import { retryTransient } from '../poll.ts'
+import { RelayError } from '../providers/relay-http.ts'
+import { generateShotClip, saveUrl, SHOT_MOTION_PROMPT } from './shot-clip.ts'
 import { buildTimeline, writeSrt, type TimelineData, Timeline } from '../finalcut/timeline.ts'
 import { renderTimeline, probeDurationSec } from '../finalcut/render-ffmpeg.ts'
 import { resolveVoice, buildMacSayCommand, buildSapiScript, synthesizeCloudSpeech, type CloudTtsConfig } from '../finalcut/voice.ts'
@@ -41,7 +43,33 @@ export interface MachineDeps {
 }
 
 const IMAGE_MODEL_DEFAULT = 'doubao-seedream-4-0-250828'
-const VIDEO_MODEL_DEFAULT = 'happyhorse-1.1-i2v'
+export const VIDEO_MODEL_DEFAULT = 'happyhorse-1.1-i2v'
+
+/** 9:16 画布用竖版参考图（2:3 为中转普遍支持的最接近竖档，渲染端 crop 归一化消黑边）。 */
+const IMAGE_SIZE_PORTRAIT = '1024x1536'
+/** 角色三视图卡：横向并排三视图，横版构图。 */
+const IMAGE_SIZE_LANDSCAPE = '1536x1024'
+
+/** size 透传 + 服务端 400 单次降级（部分上游不认 size 参数；429/5xx 走外层 retryTransient）。 */
+async function submitImageWithSize(
+  p: Provider, stage: StageId, prompt: string, size: string | undefined, onFallback: () => void,
+): Promise<string> {
+  if (!size) return (await p.submit(stage, { prompt })).jobId
+  try {
+    return (await p.submit(stage, { prompt, size })).jobId
+  } catch (err) {
+    if (err instanceof RelayError && err.status === 400) {
+      onFallback()
+      return (await p.submit(stage, { prompt })).jobId
+    }
+    throw err
+  }
+}
+
+/** manual gate 拦截（工具层转 manual-gate 信封，指引 vgen_provide）。 */
+export class ManualGateError extends Error {}
+/** ask gate 被拒（工具层转 gate-approval 信封，指引 gateApprovals 重调）。 */
+export class AskGateRejectedError extends Error {}
 
 function runExec(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -57,12 +85,6 @@ function readJson<T>(runs: RunStore, runId: string, name: string): T {
 function lastEvent(events: RunEvent[], type: string): RunEvent | undefined {
   const hits = events.filter((e) => e.type === type)
   return hits.length ? hits[hits.length - 1] : undefined
-}
-
-async function saveUrl(fetchImpl: typeof fetch, url: string, file: string): Promise<void> {
-  const res = await fetchImpl(url, { signal: AbortSignal.timeout(120000) })
-  if (!res.ok) throw new Error(`下载失败 http-${res.status}`)
-  writeFileSync(file, Buffer.from(await res.arrayBuffer()), { mode: 0o600 })
 }
 
 /** 简单并发泵：按 index 顺序发起，至多 limit 个在飞；任一失败即熔断（在飞任务自然完成，不再取新任务）。 */
@@ -126,11 +148,11 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
 
   const ensureGate = async (stage: StageId, info: string): Promise<void> => {
     const mode = gates[stage] ?? 'auto'
-    if (mode === 'manual') throw new Error(`段 ${stage} 为 manual 模式：请先在会话中提供该段产物（文件/JSON）后再推进`)
+    if (mode === 'manual') throw new ManualGateError(`段 ${stage} 为 manual 模式：请先在会话中提供该段产物（文件/JSON）后再推进`)
     if (mode === 'ask') {
       if (!deps.ask) throw new Error(`段 ${stage} 需要审批，但未提供 ask 通道`)
       const ok = await deps.ask(stage, info)
-      if (ok !== true) throw new Error(`段 ${stage} 在 ask 审批中被拒绝`)
+      if (ok !== true) throw new AskGateRejectedError(`段 ${stage} 在 ask 审批中被拒绝`)
     }
   }
 
@@ -153,14 +175,16 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       mkdirSync(assetDir, { recursive: true })
       const imageModel = deps.imageModel ?? IMAGE_MODEL_DEFAULT
       const p = deps.providers.forModel(imageModel, { fetchImpl })
-      const jobs: Array<{ file: string; prompt: string }> = [
+      const jobs: Array<{ file: string; prompt: string; size: string }> = [
         ...script.characters.map((c) => ({
           file: join(assetDir, `char-${c.id}.png`),
           prompt: buildCharacterSheetPrompt({ name: c.name, appearance: c.appearance, style: script.style }).positive,
+          size: IMAGE_SIZE_LANDSCAPE,
         })),
         ...script.scenes.map((sc) => ({
           file: join(assetDir, `scene-${sc.id}.png`),
           prompt: buildScenePrompt({ name: sc.name, description: sc.description, style: script.style }).positive,
+          size: IMAGE_SIZE_PORTRAIT,
         })),
       ]
       const urls: Array<{ key: string; url: string }> = []
@@ -169,7 +193,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         await pump(jobs, deps.concurrency ?? 2, async (job) => {
           const est = deps.pricing ? estimateCny(imageModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'image'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
-          const { jobId: url } = await retryTransient(() => p.submit(st, { prompt: job.prompt }))
+          const url = await retryTransient(() =>
+            submitImageWithSize(p, st, job.prompt, job.size, () => runs.appendEvent(runId, 'size-fallback', { stage: st, size: job.size })),
+          )
           runs.appendEvent(runId, 'spend', { stage: st, model: imageModel, estCny: est, jobId: String(url).slice(0, 80) })
           await saveUrl(fetchImpl, url, job.file)
           urls.push({ key: job.file, url })
@@ -210,7 +236,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           })
           const est = deps.pricing ? estimateCny(imageModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'image'))) throw new Error(`用户取消（shot ${shot.index}）`)
-          const { jobId: url } = await retryTransient(() => p.submit(st, { prompt: merged.positive }))
+          const url = await retryTransient(() =>
+            submitImageWithSize(p, st, merged.positive, IMAGE_SIZE_PORTRAIT, () => runs.appendEvent(runId, 'size-fallback', { stage: st, size: IMAGE_SIZE_PORTRAIT })),
+          )
           runs.appendEvent(runId, 'spend', { stage: st, model: imageModel, estCny: est, shot: shot.index, jobId: String(url).slice(0, 80) })
           const file = join(shotsDir, `shot-${String(shot.index).padStart(3, '0')}.png`)
           await saveUrl(fetchImpl, url, file)
@@ -252,22 +280,24 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           const durationSec = sb.shots.find((s) => s.index === shot.index)?.durationSec ?? 5
           const est = deps.pricing ? estimateCny(videoModel, deps.pricing) : null
           if (!(await deps.confirmer(est, 'video'))) throw new Error(`用户取消（shot ${shot.index}）`)
-          const { jobId } = await retryTransient(() => p.submit(st, {
-            prompt: '镜头缓慢推进，主体自然运动，电影感光影',
-            imageUrl: shot.url,
-            durationSec,
-          }))
-          runs.appendEvent(runId, 'spend', { stage: st, model: videoModel, estCny: est, shot: shot.index, jobId: String(jobId).slice(0, 80) })
-          const finalState = await pollUntil(
-            () => p.status(String(jobId)),
-            { isFinal: (s) => s.state === 'done' || s.state === 'failed', delayMs: deps.pollDelayMs ?? 1000, maxPollMs: 600000 },
-          )
-          if (finalState.state === 'failed') throw new Error(`shot ${shot.index} 视频失败: ${finalState.error ?? '?'}`)
-          const f = await p.fetch(String(jobId))
-          const url = f.outputs[0]
-          if (!url) throw new Error(`shot ${shot.index} 完成但无输出`)
           const file = join(clipsDir, `shot-${String(shot.index).padStart(3, '0')}.mp4`)
-          await saveUrl(fetchImpl, url, file)
+          try {
+            await generateShotClip({
+              provider: p,
+              fetchImpl,
+              imageUrl: shot.url,
+              prompt: SHOT_MOTION_PROMPT,
+              durationSec,
+              outFile: file,
+              pollDelayMs: deps.pollDelayMs,
+              onSubmit: (jobId) => {
+                runs.appendEvent(runId, 'spend', { stage: st, model: videoModel, estCny: est, shot: shot.index, jobId: jobId.slice(0, 80) })
+              },
+            })
+          } catch (err) {
+            // 保留 shot 上下文前缀（原实现的判别性消息形态）
+            throw new Error(`shot ${shot.index}: ${err instanceof Error ? err.message : String(err)}`)
+          }
           clipFiles.push(file)
         })
         clipFiles.sort()

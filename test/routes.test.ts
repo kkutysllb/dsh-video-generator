@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { handleApi, healthPayload, isLoopbackRequest } from '../src/host/routes.ts'
+import { handleApi, healthPayload, isLoopbackRequest, resolveMediaPath, mediaContentType } from '../src/host/routes.ts'
 import { VaultStore } from '../src/store/vault.ts'
 import { RunStore } from '../src/store/runs.ts'
 import { probeChannel } from '../src/probe.ts'
@@ -212,4 +212,102 @@ test('同步内部错误不泄漏细节', () => {
   } finally {
     rmSync(c.dir, { recursive: true, force: true })
   }
+})
+
+test('M4: runs.get 返回 record+artifacts+spend 聚合；未知 id → not-found 信封', () => {
+  const c = ctx()
+  try {
+    const run = c.runs.create('路由 run')
+    c.runs.appendEvent(run.id, 'spend', { estCny: 0.5 })
+    const env = handleApi(c.api, 'runs.get', { id: run.id }) as { ok: true; value: { record: { id: string }; spend: { estCny: number } } }
+    assert.equal(env.ok, true)
+    assert.equal(env.value.record.id, run.id)
+    assert.equal(env.value.spend.estCny, 0.5)
+    const miss = handleApi(c.api, 'runs.get', { id: 'run-nope' }) as { ok: false; error: { code: string } }
+    assert.equal(miss.ok, false)
+    assert.equal(miss.error.code, 'not-found')
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: channels.adoptModels 用内置目录推断 kind 并合并去重', () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 'adopt-a', baseUrl: 'https://api.example.com', apiKey: 'sk-1234567890ab', models: [{ model: 'gpt-x', kind: 'image' }] })
+    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-a', models: ['happyhorse-1.1-i2v', 'seedream-4.0'] }) as { ok: true; value: { models: Array<{ model: string; kind: string }> } }
+    assert.equal(env.ok, true)
+    const kinds = Object.fromEntries(env.value.models.map((m) => [m.model, m.kind]))
+    assert.equal(kinds['happyhorse-1.1-i2v'], 'video')
+    assert.equal(kinds['seedream-4.0'], 'image')
+    assert.equal(kinds['gpt-x'], 'image') // 未重报的既有模型原样保留
+    assert.equal(env.value.models.length, 3) // 合并去重
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: channels.adoptModels 重报目录不认识的名字不刷掉既有 kind（unknown 缺省 video 盲覆盖回归）', () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 'adopt-u', baseUrl: 'https://api.example.com', apiKey: 'sk-1234567890ab', models: [{ model: 'gpt-x', kind: 'image' }] })
+    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-u', models: ['gpt-x'] }) as { ok: true; value: { models: Array<{ model: string; kind: string }> } }
+    assert.equal(env.ok, true)
+    assert.equal(env.value.models.length, 1)
+    assert.equal(env.value.models[0]?.kind, 'image') // 修复前会被 unknownEntry() 刷成 'video'
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: channels.adoptModels 响应不含明文 key', () => {
+  const c = ctx()
+  try {
+    handleApi(c.api, 'channels.create', { id: 'adopt-b', baseUrl: 'https://api.example.com', apiKey: 'sk-secret-abcdef999' })
+    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-b', models: ['wan2.5-i2v'] })
+    assert.ok(!JSON.stringify(env).includes('sk-secret-abcdef999'))
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: settings.update gateDefaults 校验段名与模式', () => {
+  const c = ctx()
+  try {
+    const bad = handleApi(c.api, 'settings.update', { gateDefaults: { teleport: 'auto' } }) as { ok: false; error: { code: string } }
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error.code, 'bad-request')
+    const bad2 = handleApi(c.api, 'settings.update', { gateDefaults: { video: 'slow' } }) as { ok: false; error: { code: string } }
+    assert.equal(bad2.ok, false)
+    assert.equal(bad2.error.code, 'bad-request')
+    const good = handleApi(c.api, 'settings.update', { gateDefaults: { video: 'ask' } }) as { ok: true; value: { gateDefaults: Record<string, string> } }
+    assert.equal(good.ok, true)
+    assert.equal(good.value.gateDefaults['video'], 'ask')
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: resolveMediaPath 合法路径解析到 run 目录内', () => {
+  const p = resolveMediaPath('/runs-root', '/media/run-123-abc/clips/shot-001.mp4')
+  assert.equal(p, join('/runs-root', 'run-123-abc', 'clips', 'shot-001.mp4'))
+})
+
+test('M4: resolveMediaPath 拒绝穿越/绝对路径/空段/非法 runId', () => {
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/../../etc/passwd'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/%2e%2e/x'), null) // 调用方已 decode，这里直接见 '..' 形态
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1//x'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/./x'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/../vault.json'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/RUN-Upper/x.png'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/other/run-1/x.png'), null)
+  assert.equal(resolveMediaPath('/runs-root', '/media/run-1/sub/../shot.png'), null)
+})
+
+test('M4: mediaContentType 映射 + 缺省 octet-stream', () => {
+  assert.equal(mediaContentType('a.png'), 'image/png')
+  assert.equal(mediaContentType('a.MP4'), 'video/mp4')
+  assert.equal(mediaContentType('a.srt'), 'text/plain; charset=utf-8')
+  assert.equal(mediaContentType('a.bin'), 'application/octet-stream')
 })

@@ -1,11 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Writable } from 'node:stream'
 import { apply } from '../src/host/index.ts'
 import type { IncomingMessage } from 'node:http'
 import type { DshToolDefinition } from '../src/tools/handoff.ts'
+import { VaultStore } from '../src/store/vault.ts'
 
 interface RegisteredRoute {
   kind: string
@@ -18,7 +20,8 @@ interface FakeRes {
   headers: Record<string, string>
   body: string
   setHeader(k: string, v: string): void
-  end(b: string): void
+  end(b?: string): void
+  destroy?(): void
 }
 
 function fakeRes(): FakeRes {
@@ -30,7 +33,7 @@ function fakeRes(): FakeRes {
       res.headers[k] = v
     },
     end(b) {
-      res.body = b
+      res.body = b ?? ''
     },
   }
   return res
@@ -41,6 +44,10 @@ function wire(env: NodeJS.ProcessEnv) {
   // 故 wire 期间临时注入 DSH_HOME，结束即还原，避免测试污染真实 HOME。
   const prevHome = process.env['DSH_HOME']
   if (env['DSH_HOME'] !== undefined) process.env['DSH_HOME'] = env['DSH_HOME']
+  // ensurePresetInstalled 走 homedir()（POSIX 动态读 HOME）：wire 期间一并重定向到 DSH_HOME 同款 tmp，
+  // 避免每次 apply 测试都把预设幂等写入真实 ~/.dsh/.kcoder（会静默回滚用户手工定制的预设）
+  const prevUserProfile = process.env['HOME']
+  if (env['DSH_HOME'] !== undefined) process.env['HOME'] = env['DSH_HOME']
 
   const routes = new Map<string, RegisteredRoute>()
   const effects: string[] = []
@@ -82,6 +89,8 @@ function wire(env: NodeJS.ProcessEnv) {
 
   if (prevHome === undefined) delete process.env['DSH_HOME']
   else process.env['DSH_HOME'] = prevHome
+  if (prevUserProfile === undefined) delete process.env['HOME']
+  else process.env['HOME'] = prevUserProfile
   return { routes, effects, registeredTools, sections, dispose, disposers }
 }
 
@@ -91,16 +100,21 @@ function findApi(routes: Map<string, RegisteredRoute>): RegisteredRoute {
   return r
 }
 
-test('apply 注册三条路由并经 effect 管理', () => {
+test('apply 注册六条路由并经 effect 管理', () => {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-wire-'))
   try {
     const { routes, effects } = wire({ DSH_HOME: dir })
     assert.deepEqual([...routes.keys()].sort(), [
       '/dsh-video-generator/api',
+      '/dsh-video-generator/channels',
       '/dsh-video-generator/health',
+      '/dsh-video-generator/media',
       '/dsh-video-generator/runs',
+      '/dsh-video-generator/settings',
     ])
-    assert.equal(effects.length, 3)
+    assert.equal(effects.length, 6)
+    assert.equal(routes.get('/dsh-video-generator/runs')!.kind, 'prefix')
+    assert.equal(routes.get('/dsh-video-generator/media')!.kind, 'prefix')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -112,7 +126,7 @@ test('apply 注册三交接工具与 systemPrompt 通告；disposer 回收', () 
     const w = wire({ DSH_HOME: dir })
     assert.deepEqual(
       [...w.registeredTools].map((d) => d.name).sort(),
-      ['vgen_generate', 'vgen_script', 'vgen_status', 'vgen_story', 'vgen_storyboard'],
+      ['vgen_channels', 'vgen_generate', 'vgen_provide', 'vgen_review', 'vgen_script', 'vgen_status', 'vgen_story', 'vgen_storyboard'],
     )
     assert.ok(w.registeredTools.every((d) => typeof d.execute === 'function' && d.parameters && d.output?.render))
     assert.deepEqual(
@@ -208,5 +222,229 @@ test('api 面：超限请求体 413', async () => {
     assert.ok(res.body.includes('too-large'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// media 路由需要真流式响应（createReadStream pipe）：Writable 收集 chunks + 补被调用面
+function writableRes(): FakeRes & { bytes(): Buffer; finish(): Promise<void>; on(ev: string, cb: () => void): void } {
+  const chunks: Buffer[] = []
+  let finishResolve: (() => void) | null = null
+  const finishP = new Promise<void>((r) => {
+    finishResolve = r
+  })
+  const res = new Writable({
+    write(chunk, _enc, cb) {
+      chunks.push(chunk as Buffer)
+      cb()
+    },
+  }) as unknown as FakeRes & { bytes(): Buffer; finish(): Promise<void>; on(ev: string, cb: () => void): void }
+  res.statusCode = 0
+  res.headers = {}
+  res.setHeader = (k, v) => {
+    res.headers[k] = v
+  }
+  res.end = () => {
+    finishResolve!()
+  }
+  res.destroy = () => {}
+  res.bytes = () => Buffer.concat(chunks)
+  res.body = ''
+  res.on('finish', () => finishResolve!())
+  res.finish = () => finishP
+  return res
+}
+
+// media fixture：真 tmp run 目录 + 真 png；call() 走完整 handler 并等流结束
+function mediaFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-wire-'))
+  const { routes } = wire({ DSH_HOME: dir })
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xde, 0xad, 0xbe, 0xef])
+  const runDir = join(dir, '.dsh-video-generator', 'runs', 'run-alpha')
+  mkdirSync(join(runDir, 'assets'), { recursive: true })
+  writeFileSync(join(runDir, 'assets', 'a.png'), png)
+  const media = routes.get('/dsh-video-generator/media')!
+  const call = async (url: string, host = '127.0.0.1:1', method = 'GET') => {
+    const res = writableRes()
+    await media.handler(
+      { method, url, headers: { host }, socket: { remoteAddress: '127.0.0.1' } } as unknown as Partial<IncomingMessage>,
+      res as unknown as FakeRes,
+    )
+    await res.finish()
+    return res
+  }
+  return { png, call, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('media：GET run 内真文件 → 200 + content-type image/png + 字节一致 + no-store', async () => {
+  const fx = mediaFixture()
+  try {
+    const res = await fx.call('/dsh-video-generator/media/run-alpha/assets/a.png')
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.headers['content-type'], 'image/png')
+    assert.equal(res.headers['cache-control'], 'no-store')
+    assert.equal(res.headers['content-length'], String(fx.png.length))
+    assert.ok(res.bytes().equals(fx.png))
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('media：目录穿越 URL → 404', async () => {
+  const fx = mediaFixture()
+  try {
+    const res = await fx.call('/dsh-video-generator/media/run-alpha/../../vault.json')
+    assert.equal(res.statusCode, 404)
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('media：编码穿越 URL（%2e%2e%2f）→ 404', async () => {
+  const fx = mediaFixture()
+  try {
+    const res = await fx.call('/dsh-video-generator/media/run-alpha/%2e%2e%2fvault.json')
+    assert.equal(res.statusCode, 404)
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('media：伪造 Host（evil.com）→ 403', async () => {
+  const fx = mediaFixture()
+  try {
+    const res = await fx.call('/dsh-video-generator/media/run-alpha/assets/a.png', 'evil.com')
+    assert.equal(res.statusCode, 403)
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('media：HEAD → 200 + 头齐全 + 空 body', async () => {
+  const fx = mediaFixture()
+  try {
+    const res = await fx.call('/dsh-video-generator/media/run-alpha/assets/a.png', '127.0.0.1:1', 'HEAD')
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.headers['content-type'], 'image/png')
+    assert.equal(res.headers['content-length'], String(fx.png.length))
+    assert.equal(res.bytes().length, 0)
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('便捷路由：GET /channels 返回通道且不含明文 key；伪造 Host 403', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-wire-'))
+  try {
+    const { routes } = wire({ DSH_HOME: dir })
+    VaultStore.open({ env: { DSH_HOME: dir } }).createChannel({
+      id: 'ch1',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-secret-12345678',
+    })
+    const channels = routes.get('/dsh-video-generator/channels')!
+    const req = (host: string) =>
+      ({ method: 'GET', headers: { host }, socket: { remoteAddress: '127.0.0.1' } }) as unknown as Partial<IncomingMessage>
+
+    const ok = fakeRes()
+    await channels.handler(req('127.0.0.1:1'), ok)
+    assert.equal(ok.statusCode, 200)
+    assert.ok(ok.body.includes('ch1'))
+    assert.ok(!ok.body.includes('sk-secret'))
+
+    const forbidden = fakeRes()
+    await channels.handler(req('evil.com'), forbidden)
+    assert.equal(forbidden.statusCode, 403)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('便捷路由：POST /settings 更新预算；非法 JSON 400；非 POST 405', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-wire-'))
+  try {
+    const { routes } = wire({ DSH_HOME: dir })
+    const settings = routes.get('/dsh-video-generator/settings')!
+    const reqWith = (method: string, body?: string) =>
+      ({
+        method,
+        headers: { host: '127.0.0.1:1' },
+        socket: { remoteAddress: '127.0.0.1' },
+        ...(body === undefined
+          ? {}
+          : {
+              [Symbol.asyncIterator]: async function* () {
+                yield Buffer.from(body)
+              },
+            }),
+      }) as unknown as Partial<IncomingMessage>
+
+    const updated = fakeRes()
+    await settings.handler(reqWith('POST', '{"confirmThresholdCny": 12.5}'), updated)
+    assert.equal(updated.statusCode, 200)
+    assert.ok(updated.body.includes('12.5'))
+
+    const badJson = fakeRes()
+    await settings.handler(reqWith('POST', '{broken'), badJson)
+    assert.equal(badJson.statusCode, 400)
+
+    const notAllowed = fakeRes()
+    await settings.handler(reqWith('GET'), notAllowed)
+    assert.equal(notAllowed.statusCode, 405)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('runs prefix：列表免围栏、未知 run 详情 404、非两段路径 404、伪造 Host 403', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-wire-'))
+  try {
+    const { routes } = wire({ DSH_HOME: dir })
+    const runsRoute = routes.get('/dsh-video-generator/runs')!
+    const req = (url: string, host = '127.0.0.1:1') =>
+      ({ method: 'GET', url, headers: { host }, socket: { remoteAddress: '127.0.0.1' } }) as unknown as Partial<IncomingMessage>
+
+    const list = fakeRes()
+    await runsRoute.handler(req('/dsh-video-generator/runs'), list)
+    assert.equal(list.statusCode, 200)
+    assert.ok(list.body.includes('"runs"'))
+
+    const detail = fakeRes()
+    await runsRoute.handler(req('/dsh-video-generator/runs/no-such-run'), detail)
+    assert.equal(detail.statusCode, 404)
+
+    const unknown = fakeRes()
+    await runsRoute.handler(req('/dsh-video-generator/runs/a/b'), unknown)
+    assert.equal(unknown.statusCode, 404)
+
+    const forbidden = fakeRes()
+    await runsRoute.handler(req('/dsh-video-generator/runs/no-such-run', 'evil.com'), forbidden)
+    assert.equal(forbidden.statusCode, 403)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: apply 安装预设到 ~/.dsh 与 ~/.kcoder 的 .agent-presets（幂等）', () => {
+  const home = mkdtempSync(join(tmpdir(), 'vgen-home-'))
+  const prev = process.env['HOME']
+  process.env['HOME'] = home
+  try {
+    // 真实调用 apply()（wire 装置内部）触发 ensurePresetInstalled；
+    // DSH_HOME 一并落 home → vault/runs 同步隔离，不触真实用户目录。
+    wire({ DSH_HOME: home })
+    for (const base of ['.dsh', '.kcoder']) {
+      assert.ok(existsSync(join(home, base, '.agent-presets', 'dsh-video-generator', 'preset.yml')), `缺 ${base} 预设`)
+      assert.ok(
+        existsSync(join(home, base, '.agent-presets', 'dsh-video-generator', 'agent.cordis.yml')),
+        `缺 ${base} agent.cordis.yml`,
+      )
+    }
+    // 幂等：再次 apply 不炸、文件仍在
+    wire({ DSH_HOME: home })
+    assert.ok(existsSync(join(home, '.dsh', '.agent-presets', 'dsh-video-generator', 'preset.yml')))
+  } finally {
+    if (prev === undefined) delete process.env['HOME']
+    else process.env['HOME'] = prev
+    rmSync(home, { recursive: true, force: true })
   }
 })

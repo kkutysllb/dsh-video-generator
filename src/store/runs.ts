@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import type { GateMode } from './vault.ts'
 
 export type StageState = 'pending' | 'running' | 'done' | 'failed'
 export type RunStatus = 'running' | 'done' | 'failed'
@@ -14,6 +15,13 @@ export interface RunEvent {
   detail?: Record<string, unknown>
 }
 
+/** 单镜评审档案（规格 §5.3：评分与重拍次数记录进 run.json）。key 形如 `shot-3`。 */
+export interface ReviewEntry {
+  scores: number[]
+  retries: number
+  passed: boolean
+}
+
 export interface RunRecord {
   id: string
   title: string
@@ -22,6 +30,10 @@ export interface RunRecord {
   events: RunEvent[]
   createdAt: string
   updatedAt: string
+  /** 评审档案（可选：旧 run.json 无此字段仍合法）。 */
+  reviews?: Record<string, ReviewEntry>
+  /** 每段 gate 模式覆盖（可选；生效优先级 = vault.gateDefaults < run.gates < 本次调用参数）。 */
+  gates?: Record<string, GateMode>
 }
 
 export function resolveRunsDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -41,6 +53,8 @@ function sanitizeRun(raw: unknown, id: string): RunRecord | null {
     if (state !== 'pending' && state !== 'running' && state !== 'done' && state !== 'failed') return null
   }
   if (!Array.isArray(r.events)) return null
+  const reviews = sanitizeReviews(r.reviews)
+  const gates = sanitizeGates(r.gates)
   return {
     id: r.id,
     title: typeof r.title === 'string' ? r.title : 'untitled',
@@ -49,7 +63,35 @@ function sanitizeRun(raw: unknown, id: string): RunRecord | null {
     events: r.events as RunEvent[],
     createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date().toISOString(),
     updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : new Date().toISOString(),
+    ...(reviews ? { reviews } : {}),
+    ...(gates ? { gates } : {}),
   }
+}
+
+/** reviews 形状守卫：任一条目非法则整体丢弃（undefined）。 */
+function sanitizeReviews(raw: unknown): Record<string, ReviewEntry> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const out: Record<string, ReviewEntry> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v !== 'object' || v === null) return undefined
+    const e = v as Partial<ReviewEntry>
+    if (!Array.isArray(e.scores) || !e.scores.every((s) => typeof s === 'number' && Number.isFinite(s))) return undefined
+    if (typeof e.retries !== 'number' || !Number.isInteger(e.retries) || e.retries < 0) return undefined
+    if (typeof e.passed !== 'boolean') return undefined
+    out[k] = { scores: e.scores, retries: e.retries, passed: e.passed }
+  }
+  return out
+}
+
+/** gates 形状守卫：任一值非 GateMode 则整体丢弃（undefined）。 */
+function sanitizeGates(raw: unknown): Record<string, GateMode> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const out: Record<string, GateMode> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v !== 'auto' && v !== 'ask' && v !== 'manual') return undefined
+    out[k] = v
+  }
+  return out
 }
 
 /** 约束：单进程使用（同步 API 串行化），跨进程并发写同一 runs 目录不在保障范围。 */
@@ -170,6 +212,20 @@ export class RunStore {
   setStatus(id: string, status: RunStatus): void {
     this.mutate(id, (r) => {
       r.status = status
+    })
+  }
+
+  setReview(id: string, key: string, entry: ReviewEntry): void {
+    this.mutate(id, (r) => {
+      if (!r.reviews) r.reviews = {}
+      r.reviews[key] = entry
+    })
+  }
+
+  /** 增量合并 gate 覆盖（undefined 值不清空既有键）。 */
+  setGates(id: string, gates: Record<string, GateMode>): void {
+    this.mutate(id, (r) => {
+      r.gates = { ...(r.gates ?? {}), ...gates }
     })
   }
 

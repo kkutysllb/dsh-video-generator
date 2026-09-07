@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RunStore } from '../src/store/runs.ts'
@@ -120,6 +120,53 @@ test('stages 值非法视为损坏（.broken 备份路径）', () => {
     const run = store.create('bad-stages')
     writeFileSync(join(dir, run.id, 'run.json'), JSON.stringify({ id: run.id, status: 'running', stages: { video: 'oops' }, events: [] }), 'utf8')
     assert.equal(store.get(run.id), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: reviews/gates 合法形状往返持久化', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-runs-m4-'))
+  try {
+    const store = RunStore.open({ rootDir: dir })
+    const run = store.create('评审往返')
+    store.setReview(run.id, 'shot-1', { scores: [2, 4], retries: 1, passed: true })
+    store.setGates(run.id, { video: 'ask', 'final-cut': 'manual' })
+    const got = store.get(run.id)!
+    assert.deepEqual(got.reviews?.['shot-1'], { scores: [2, 4], retries: 1, passed: true })
+    assert.deepEqual(got.gates, { video: 'ask', 'final-cut': 'manual' })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: setGates 增量合并不清空既有键', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-runs-m4b-'))
+  try {
+    const store = RunStore.open({ rootDir: dir })
+    const run = store.create('gates 合并')
+    store.setGates(run.id, { video: 'ask' })
+    store.setGates(run.id, { 'final-cut': 'manual' })
+    assert.deepEqual(store.get(run.id)!.gates, { video: 'ask', 'final-cut': 'manual' })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('M4: 非法 reviews/gates 形状整体丢弃（记录仍有效）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vgen-runs-m4c-'))
+  try {
+    const store = RunStore.open({ rootDir: dir })
+    const run = store.create('形状守卫')
+    const file = join(dir, run.id, 'run.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8'))
+    raw.reviews = { 'shot-1': { scores: 'bad', retries: 0, passed: true } }
+    raw.gates = { video: 'teleport' }
+    writeFileSync(file, JSON.stringify(raw))
+    const got = store.get(run.id)!
+    assert.equal(got.reviews, undefined)
+    assert.equal(got.gates, undefined)
+    assert.equal(got.id, run.id)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

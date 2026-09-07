@@ -3,10 +3,14 @@
  * 对齐 dsh-super-ppts 路由模式；handler 不碰 node:http，便于无宿主测试。
  */
 
+import { resolve, sep } from 'node:path'
 import type { VaultStore } from '../store/vault.ts'
 import { VaultError } from '../store/vault.ts'
 import type { RunStore } from '../store/runs.ts'
 import type { probeChannel } from '../probe.ts'
+import { collectArtifacts } from './artifacts.ts'
+import { resolveModel } from '../model-catalog.ts'
+import { isStage } from '../stages.ts'
 
 export const PLUGIN_ID = 'dsh-video-generator'
 export const PLUGIN_VERSION = '0.1.0'
@@ -147,6 +151,37 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
     }
     case 'runs.list':
       return { runs: ctx.runs.list() }
+    case 'runs.get': {
+      const rid = requireString(args['id'], 'id')
+      const record = ctx.runs.get(rid)
+      if (!record) throw new VaultError('not-found', `run 不存在: ${rid}`)
+      let entries = 0
+      let estCny = 0
+      for (const e of record.events) {
+        if (e.type !== 'spend') continue
+        entries++
+        const v = e.detail?.['estCny']
+        if (typeof v === 'number' && Number.isFinite(v)) estCny += v
+      }
+      return { record, artifacts: collectArtifacts(ctx.runs, rid), spend: { entries, estCny: Number(estCny.toFixed(4)) } }
+    }
+    case 'channels.adoptModels': {
+      const cid = requireString(args['id'], 'id')
+      const ch = ctx.vault.getChannel(cid)
+      if (!ch) throw new VaultError('not-found', `通道不存在: ${cid}`)
+      const names = args['models']
+      if (!Array.isArray(names) || names.length === 0 || names.length > 100) throw new VaultError('bad-request', 'models 须为 1..100 字符串数组')
+      const merged = new Map(ch.models.map((m) => [m.model, m]))
+      for (const n of names) {
+        if (typeof n !== 'string' || !n) throw new VaultError('bad-request', `非法模型名: ${String(n)}`)
+        const { entry, source } = resolveModel(n)
+        // 目录不认识的名字（unknown 缺省 kind=video）不得覆盖用户已配置的既有条目：
+        // 中转站枚举导入动辄数百模型，盲覆盖会把用户手工设好的 image/tts kind 全刷成 video
+        const existing = merged.get(n)
+        merged.set(n, source === 'unknown' && existing ? existing : { model: n, kind: entry.kind })
+      }
+      return ctx.vault.updateChannel(cid, { models: [...merged.values()] })
+    }
     case 'settings.get': {
       const d = ctx.vault.load()
       return { defaultChannelId: d.defaultChannelId, budget: d.budget, gateDefaults: d.gateDefaults }
@@ -158,10 +193,60 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
         if (typeof t !== 'number' || !Number.isFinite(t)) throw new VaultError('bad-request', 'confirmThresholdCny 须为数字')
         ctx.vault.setBudget(t)
       }
+      const gd = args['gateDefaults']
+      if (gd !== undefined) {
+        if (typeof gd !== 'object' || gd === null || Array.isArray(gd)) throw new VaultError('bad-request', 'gateDefaults 须为对象 {段名: auto|ask|manual}')
+        for (const [k, v] of Object.entries(gd as Record<string, unknown>)) {
+          if (!isStage(k)) throw new VaultError('bad-request', `gateDefaults 键须为合法段名: ${k}`)
+          if (v !== 'auto' && v !== 'ask' && v !== 'manual') throw new VaultError('bad-request', `gateDefaults[${k}] 须为 auto|ask|manual`)
+          ctx.vault.setGateDefault(k, v)
+        }
+      }
       const d = ctx.vault.load()
       return { budget: d.budget, gateDefaults: d.gateDefaults }
     }
     default:
       throw new VaultError('bad-request', `unknown-method: ${name}`)
   }
+}
+
+const MEDIA_RUNID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+/** '/media/<runId>/<rel...>' → run 目录内绝对路径；任何穿越/畸形 → null（调用方 404）。
+ *  入参 urlPath 必须已 decodeURIComponent。防线三层：runId 白名单正则、rel 段级拒绝 '.'/'..'/空段、
+ *  resolve 后前缀核验（endsWith 兜底不做——前缀 + sep 即充分）。 */
+export function resolveMediaPath(runsRoot: string, urlPath: string): string | null {
+  const m = /^\/media\/([^/?#]+)\/(.+)$/.exec(urlPath)
+  if (!m) return null
+  const runId = m[1]!
+  const rel = m[2]!
+  if (!MEDIA_RUNID_RE.test(runId)) return null
+  const segs = rel.split('/')
+  // 段级拒绝：''/'.'/'..' 直接拒；另防御性二次 decode 段值，%2e 等编码形态还原后为 '.'/'..'/空 同样拒
+  //（双 decode 不误伤合法文件名——按契约入参应已 decode，残留 % 编码段本就异常）。
+  const dangerous = segs.some((s) => {
+    if (s === '' || s === '.' || s === '..') return true
+    try {
+      const d = decodeURIComponent(s)
+      return d === '' || d === '.' || d === '..'
+    } catch {
+      return true
+    }
+  })
+  if (dangerous) return null
+  const base = resolve(runsRoot, runId)
+  const resolved = resolve(base, segs.join(sep))
+  if (!resolved.startsWith(base + sep)) return null
+  return resolved
+}
+
+const MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.aiff': 'audio/aiff', '.wav': 'audio/wav',
+  '.srt': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8',
+}
+
+export function mediaContentType(filename: string): string {
+  const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
+  return MEDIA_TYPES[ext] ?? 'application/octet-stream'
 }

@@ -12,10 +12,10 @@ import { providerForModel } from '../src/registry.ts'
 import { SpendLedger, confirmSpend } from '../src/spend.ts'
 import { RunStore } from '../src/store/runs.ts'
 
-/** confirmSpend 的 confirmer 是同步签名：TTY 下用 readSync 阻塞读一行；非 TTY（无 stdin 的 bash）readline 会直接 EOF 误取消，按环境适配自动放行。 */
+/** confirmSpend 的 confirmer 是同步签名：AUTO_CONFIRM=1 直接放行；TTY 下用 readSync 阻塞读一行（非 TTY 未 opt-in 已在入口退出）。 */
 function askConfirm(message: string): boolean {
-  if (!process.stdin.isTTY) {
-    console.log('[auto-confirm: non-tty]')
+  if (process.env['VGEN_AUTO_CONFIRM'] === '1') {
+    console.log('[auto-confirm: VGEN_AUTO_CONFIRM=1]')
     return true
   }
   process.stdout.write(`${message} (y/N) `)
@@ -56,6 +56,12 @@ async function main(): Promise<void> {
   const apiKey = process.env['VGEN_API_KEY']
   if (!baseUrl || !apiKey) {
     console.error('用法: VGEN_BASE_URL=... VGEN_API_KEY=... node scripts/demo-single-shot.ts [workDir]')
+    process.exit(2)
+  }
+  const AUTO_CONFIRM = process.env['VGEN_AUTO_CONFIRM'] === '1'
+  // 非交互且未显式 opt-in → 拒绝并给出指引（修 M3b 遗留：非 TTY 一律自动确认过于激进）
+  if (!process.stdin.isTTY && !AUTO_CONFIRM) {
+    console.error('[demo] 非交互终端须显式 VGEN_AUTO_CONFIRM=1 才放行成本确认（预估花费见价目表）')
     process.exit(2)
   }
   const channel = { id: 'vectorengine', baseUrl, apiKey }
