@@ -42,3 +42,18 @@ test('validateStoryboard：index 连续/时长 2-10/引用存在', () => {
   assert.throws(() => validateStoryboard({ shots: [{ ...SHOT1, durationSec: 30 }], characters: STORY.characters, scenes: SCRIPT.scenes }), /durationSec/)
   assert.throws(() => validateStoryboard({ shots: [{ ...SHOT1, characterIds: ['ghost'] }], characters: STORY.characters, scenes: SCRIPT.scenes }), /characterIds/)
 })
+
+test('validateStory：超长 title（201 字符）报 HandoffError 且消息含实际长度', () => {
+  assert.throws(
+    () => validateStory({ ...STORY, title: 'x'.repeat(201) }),
+    (err: unknown) => err instanceof HandoffError && /title.*201|超限/.test(err.message),
+  )
+})
+
+test('validateStoryboard：畸形 characters（缺 name）报 HandoffError；characters 缺失直接拒', () => {
+  assert.throws(
+    () => validateStoryboard({ shots: [SHOT1], characters: [{ id: 'x' }] }),
+    HandoffError,
+  )
+  assert.throws(() => validateStoryboard({ shots: [SHOT1] }), HandoffError)
+})
