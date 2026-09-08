@@ -76,3 +76,29 @@ test('apply：无 document 环境（node）不炸——样式/导航图标注入
   }
   assert.doesNotThrow(() => (mod['apply'] as (c: unknown) => void)(ctx))
 })
+
+test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {
+  const { mod } = loadBundle()
+  let dictRef: { current: { zh: Record<string, string>; en: Record<string, string> } | null } = { current: null }
+  const ctx = {
+    slots: { inject: () => () => {}, register: () => () => {} },
+    locale: {
+      register: (_n: string, d: { zh: Record<string, string>; en: Record<string, string> }) => { dictRef.current = d; return () => {} },
+      bind: () => (k: string) => k,
+    },
+    effect: (fn: () => () => void) => { fn(); return () => {} },
+  }
+  ;(mod['apply'] as (c: unknown) => void)(ctx)
+  const dict = dictRef.current
+  assert.ok(dict, 'locale.register 未被调用')
+  const required = [
+    'pickerSearch', 'pickerFilterKind', 'pickerFilterAll',
+    'pickerSelectAll', 'pickerDeselectAll', 'pickerSave',
+    'pickerEmpty', 'pickerLabelConfigured', 'pickerLabelNew',
+    'pickerKindImage', 'pickerKindVideo', 'pickerKindTts', 'pickerSaved',
+  ]
+  for (const k of required) {
+    assert.ok(dict!.zh[k], `locale.zh.${k} 缺失`)
+    assert.ok(dict!.en[k], `locale.en.${k} 缺失`)
+  }
+})
