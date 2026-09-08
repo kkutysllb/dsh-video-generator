@@ -13,7 +13,7 @@ import { resolveModel } from '../model-catalog.ts'
 import { isStage } from '../stages.ts'
 
 export const PLUGIN_ID = 'dsh-video-generator'
-export const PLUGIN_VERSION = '1.0.2'
+export const PLUGIN_VERSION = '1.0.3'
 
 export interface ApiContext {
   vault: VaultStore
