@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-generator",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "DSH 原生视频生成插件：短视频/短剧/漫剧管线，用户自配 OpenAI 兼容通道（官方/中转皆可）",
   "type": "module",
   "engines": {
