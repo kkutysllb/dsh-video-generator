@@ -96,9 +96,12 @@ test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {
     'pickerSelectAll', 'pickerDeselectAll', 'pickerSave',
     'pickerEmpty', 'pickerLabelConfigured', 'pickerLabelNew',
     'pickerKindImage', 'pickerKindVideo', 'pickerKindTts', 'pickerSaved',
+    'pickerTitle', 'pickerCountUnit', 'pickerCheckedHintPrefix',
+    'pickerStatCheckedPrefix', 'pickerStatKeepPrefix',
   ]
   for (const k of required) {
-    assert.ok(dict!.zh[k], `locale.zh.${k} 缺失`)
-    assert.ok(dict!.en[k], `locale.en.${k} 缺失`)
+    // 注：允许空字符串（en.pickerCountUnit = '' 是合法设计——英文复数不分单复）
+    assert.ok(typeof dict!.zh[k] === 'string', `locale.zh.${k} 缺失`)
+    assert.ok(typeof dict!.en[k] === 'string', `locale.en.${k} 缺失`)
   }
 })
