@@ -8,6 +8,8 @@ export interface DashscopeChannel {
   apiKey: string
   model: string
   estimate?: (model: string) => number | null
+  /** Explicit channel kind can identify a custom i2v model absent from the catalog. */
+  imageToVideo?: boolean
 }
 
 interface TaskSubmitResponse {
@@ -39,7 +41,7 @@ function mapState(s: string | undefined): 'running' | 'done' | 'failed' | 'unkno
 
 export function createDashscopeRelayProvider(ch: DashscopeChannel, fetchImpl: typeof fetch = fetch): Provider {
   const base = ch.baseUrl.trim().replace(/\/+$/, '')
-  const isI2v = ch.model.toLowerCase().includes('i2v')
+  const isI2v = ch.imageToVideo ?? ch.model.toLowerCase().includes('i2v')
   const provider: Provider = {
     id: `dashscope-relay:${ch.model}`,
     capabilities: { textToVideo: !isI2v, imageToVideo: isI2v, maxDurationSec: 10, qualityTier: 5 },

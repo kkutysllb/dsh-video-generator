@@ -14,6 +14,7 @@ import { buildProvideTools, provideToolDefs } from '../tools/provide.ts'
 import { buildReviewTools, reviewToolDefs } from '../tools/review.ts'
 import { buildChannelsTools, channelsToolDefs } from '../tools/channels.ts'
 import type { ChannelRef } from '../registry.ts'
+import { modelUnavailableFrom } from '../model-selection.ts'
 import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest, resolveMediaPath, mediaContentType } from './routes.ts'
 
 export const name = PLUGIN_ID
@@ -117,8 +118,18 @@ export function apply(ctx: HostContext): () => void {
   const resolveChannel = (): ChannelRef => {
     const d = vault.load().defaultChannelId
     const c = d ? vault.getChannel(d) : null
-    if (!c) throw new Error('未配置生成通道：请先在设置页「通道管理」添加通道')
-    return { id: c.id, baseUrl: c.baseUrl, apiKey: c.apiKey }
+    if (!c) {
+      const missingId = d ?? 'default'
+      throw modelUnavailableFrom({ id: missingId, label: d ?? '默认通道', models: [] }, 'image/video/tts', null, '当前默认通道不存在')
+    }
+    return {
+      id: c.id,
+      label: c.label,
+      baseUrl: c.baseUrl,
+      apiKey: c.apiKey,
+      // 旧 vault 可能没有 models 字段：不迁移文件，运行时按空列表兼容。
+      models: Array.isArray(c.models) ? c.models : [],
+    }
   }
   const generateTools = buildGenerateTools({ vault, runs, channel: resolveChannel })
   const provideTools = buildProvideTools({ runs, env: process.env })

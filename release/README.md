@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| [v1.0.4](v1.0.4.md) | 2026-09-09 | 生成/评审模型改为默认通道 models[] 驱动，新增 model-unavailable，模型面板支持真正删除 |
 | [v1.0.3](v1.0.3.md) | 2026-09-08 | 修复 dsh-persona preset schema 升级（`text:` → `prefix:`）——同型 bug 影响 super-ppts / animations |
 | [v1.0.2](v1.0.2.md) | 2026-09-08 | 通道管理 tab 模型勾选面板（探测后展开 + 改 kind + 未勾选保留）；npm 未发布 |
 | [v1.0.1](v1.0.1.md) | 2026-09-07 | 修复预设安装写死品牌目录——跟随 harness home（DSH_HOME）；npm 1.0.0 废弃 |

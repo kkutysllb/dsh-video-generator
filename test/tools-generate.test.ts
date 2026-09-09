@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildGenerateTools } from '../src/tools/generate.ts'
+import { buildGenerateTools, configuredCloudTts } from '../src/tools/generate.ts'
 import { VaultStore } from '../src/store/vault.ts'
 import { RunStore } from '../src/store/runs.ts'
 import { STORY, SCRIPT, SHOTS } from './schema-fixtures.ts'
@@ -37,10 +37,17 @@ function fakeVideoProvider() {
 
 const fetchFake = (async (url: unknown) => new Response(Buffer.from(`bytes-of-${String(url).slice(-8)}`), { status: 200 })) as unknown as typeof fetch
 
-function setup(opts: { confirmer?: (est: number | null) => Promise<boolean> } = {}) {
+const DEFAULT_MODELS = [
+  { model: 'configured-image', kind: 'image' as const },
+  { model: 'configured-video', kind: 'video' as const },
+  { model: 'configured-tts-first', kind: 'tts' as const },
+  { model: 'configured-tts-second', kind: 'tts' as const },
+]
+
+function setup(opts: { confirmer?: (est: number | null) => Promise<boolean>; models?: typeof DEFAULT_MODELS } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-gen-tools-'))
   const vault = VaultStore.open({ file: join(dir, 'vault.json') })
-  vault.createChannel({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678' })
+  vault.createChannel({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678', models: opts.models ?? DEFAULT_MODELS })
   vault.setDefaultChannel('ve')
   const runs = RunStore.open({ rootDir: join(dir, 'runs') })
   const run = runs.create('三镜漫剧')
@@ -54,12 +61,17 @@ function setup(opts: { confirmer?: (est: number | null) => Promise<boolean> } = 
   const env = { DSH_HOME: dir, VGEN_FFMPEG: '' } as unknown as NodeJS.ProcessEnv
   const tools = buildGenerateTools({
     vault, runs,
-    channel: () => ({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678' }),
+    channel: () => {
+      const current = vault.getChannel('ve')!
+      return { id: current.id, label: current.label, baseUrl: current.baseUrl, apiKey: current.apiKey, models: current.models }
+    },
     env,
     pricing: FAKE_PRICING,
     ...(opts.confirmer ? { confirmer: opts.confirmer } : {}),
     providersOverride: {
-      forModel: (model: string) => model.includes('i2v') ? fakeVideoProvider() : fakeImageProvider(`https://img.example/${model.replace(/\W/g, '-')}.png`),
+      forModel: (model: string) => model === 'configured-video' || model === 'env-video' || model.includes('i2v')
+        ? fakeVideoProvider()
+        : fakeImageProvider(`https://img.example/${model.replace(/\W/g, '-')}.png`),
     },
     fetchImpl: fetchFake,
   })
@@ -186,11 +198,19 @@ test('M4: vgen_status 返回 reviews/gates', async () => {
   }
 })
 
-test('M4: VGEN_VIDEO_MODEL 覆盖传导到 provider 选择（上游分组饱和换档）', async () => {
+test('M4: 通道 models 优先于 VGEN_VIDEO_MODEL 传导到 provider 选择', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-gen-vm-'))
   try {
     const vault = VaultStore.open({ file: join(dir, 'vault.json') })
-    vault.createChannel({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678' })
+    vault.createChannel({
+      id: 've',
+      baseUrl: 'https://x.example',
+      apiKey: 'sk-vgen-12345678',
+      models: [
+        { model: 'configured-image', kind: 'image' },
+        { model: 'configured-video', kind: 'video' },
+      ],
+    })
     vault.setDefaultChannel('ve')
     const runs = RunStore.open({ rootDir: join(dir, 'runs') })
     const run = runs.create('换档')
@@ -202,25 +222,57 @@ test('M4: VGEN_VIDEO_MODEL 覆盖传导到 provider 选择（上游分组饱和�
     writeFileSync(join(rd, 'script.json'), JSON.stringify(SCRIPT))
     writeFileSync(join(rd, 'storyboard.json'), JSON.stringify({ ...SHOTS, characters: SCRIPT.characters, scenes: SCRIPT.scenes }))
     const requested: string[] = []
-    const env = { DSH_HOME: dir, VGEN_FFMPEG: '', VGEN_VIDEO_MODEL: 'wan2.6-i2v' } as unknown as NodeJS.ProcessEnv
+    const env = { DSH_HOME: dir, VGEN_FFMPEG: '', VGEN_VIDEO_MODEL: 'env-video' } as unknown as NodeJS.ProcessEnv
     const tools = buildGenerateTools({
       vault, runs,
-      channel: () => ({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678' }),
+      channel: () => {
+        const current = vault.getChannel('ve')!
+        return { id: current.id, label: current.label, baseUrl: current.baseUrl, apiKey: current.apiKey, models: current.models }
+      },
       env,
       pricing: FAKE_PRICING,
       providersOverride: {
         forModel: (model: string) => {
           requested.push(model)
-          return model.includes('i2v') ? fakeVideoProvider() : fakeImageProvider(`https://img.example/${model.replace(/\W/g, '-')}.png`)
+          return model === 'configured-video' || model === 'env-video' || model.includes('i2v')
+            ? fakeVideoProvider()
+            : fakeImageProvider(`https://img.example/${model.replace(/\W/g, '-')}.png`)
         },
       },
       fetchImpl: fetchFake,
     })
     const r = await tools.generate.execute({ runId: run.id, target: 'video', confirm: true }) as { ok: boolean }
     assert.equal(r.ok, true)
-    assert.ok(requested.includes('wan2.6-i2v'), 'video 段应使用 VGEN_VIDEO_MODEL 指定的模型')
-    assert.ok(!requested.includes('happyhorse-1.1-i2v'), '不应回退缺省模型')
+    assert.ok(requested.includes('configured-video'), 'video 段应使用默认通道的 video 模型')
+    assert.ok(!requested.includes('env-video'), '生产路径不得使用 VGEN_VIDEO_MODEL 覆盖通道模型')
+    assert.ok(!requested.some((model) => /happyhorse|doubao-seedream/.test(model)), '不得回退硬编码 image/video 模型')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('vgen_generate 缺少 video 模型时返回 model-unavailable 且不调用 confirmer', async () => {
+  let confirmCalls = 0
+  const s = setup({
+    models: [{ model: 'configured-image', kind: 'image' }],
+    confirmer: async () => { confirmCalls++; return true },
+  })
+  try {
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'video', confirm: true }) as { ok: boolean; error?: { code: string; message: string } }
+    assert.equal(r.ok, false)
+    assert.equal(r.error?.code, 'model-unavailable')
+    assert.match(r.error?.message ?? '', /video/)
+    assert.equal(confirmCalls, 0)
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('configuredCloudTts 使用默认通道中第一个 kind=tts 模型', () => {
+  const config = configuredCloudTts({ id: 've', baseUrl: 'https://x.example', apiKey: 'k', models: [
+    { model: 'tts-first', kind: 'tts' },
+    { model: 'tts-second', kind: 'tts' },
+  ] }, { VGEN_TTS_VOICE: 'alloy', VGEN_TTS_INSTRUCTIONS: '温柔' })
+  assert.equal(config?.model, 'tts-first')
+  assert.equal(config?.voice, 'alloy')
 })

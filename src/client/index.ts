@@ -18,8 +18,9 @@
  *      clips/final.mp4 视频、final.srt 下载；spend 汇总行）。3s 轮询仅在
  *      tab === 'studio' 且 document.visibilityState === 'visible' 时运转；
  *    - 通道管理：通道 CRUD（apiKey 仅脱敏回显）、启用/设默认、channels.test
- *      行内探测（成功显示模型数 + 前 5 模型名，可一键 channels.adoptModels
- *      导入全部枚举模型）、预算阈值与 4 个媒体段 gate 缺省（settings.update）；
+ *      行内探测（成功显示模型数 + 前 5 模型名，可一键 channels.adoptModels 导入全部枚举模型）；
+ *      模型 picker 支持逐行移除，取消勾选后保存即从当前通道删除，并允许保存空 models 列表；
+ *      预算阈值与 4 个媒体段 gate 缺省通过 settings.update 持久化；
  * 3. 数据面 = /dsh-video-generator/api/<method>（POST JSON，
  *    {ok,value}/{ok,error} 信封），与 host 侧 routes.ts 一一对应；
  * 4. 设置页导航图标：宿主 0.1.x 的 settings.section 契约只投影 id/order/label，

@@ -15,7 +15,7 @@ import { locateFfmpeg } from '../finalcut/render-ffmpeg.ts'
 import { extractReviewFrames } from '../review/frames.ts'
 import { generateShotClip, SHOT_MOTION_PROMPT } from '../pipeline/shot-clip.ts'
 import { GENERIC_NEGATIVE } from '../prompts.ts'
-import { VIDEO_MODEL_DEFAULT } from '../pipeline/machine.ts'
+import { isExplicitModelUnavailable, ModelUnavailableError, modelUnavailableFrom, selectConfiguredModel } from '../model-selection.ts'
 import { HandoffError } from '../schema/handoff.ts'
 import type { ToolResult, DshToolDefinition } from './handoff.ts'
 
@@ -145,7 +145,13 @@ export function buildReviewTools(ctx: ReviewContext): {
           let pricingMaybe = ctx.pricing
           if (pricingMaybe === undefined) pricingMaybe = await fetchPricing(channel, undefined, 15000).catch(() => null)
           const pricing = pricingMaybe
-          const videoModel = ctx.videoModel ?? env['VGEN_VIDEO_MODEL'] ?? VIDEO_MODEL_DEFAULT
+          const videoModel = ctx.videoModel ?? selectConfiguredModel(channel, 'video')
+          const provider = ctx.providersOverride
+            ? ctx.providersOverride.forModel(videoModel, { fetchImpl })
+            : providerForModel(channel, videoModel, { fetchImpl, estimate: pricing ? (m: string) => estimateCny(m, pricing) : undefined })
+          if (!provider.capabilities.imageToVideo) {
+            throw modelUnavailableFrom(channel, 'video', videoModel, `Provider ${provider.id} 不支持 image-to-video`)
+          }
           const est = pricing ? estimateCny(videoModel, pricing) : null
           let approved = false
           if (ctx.confirmer) approved = await ctx.confirmer(est)
@@ -156,10 +162,6 @@ export function buildReviewTools(ctx: ReviewContext): {
               error: { code: 'confirm-required', message: `重拍 shot ${shot} 需 1 次视频生成（估价 ${est ?? 'unknown'} CNY）：向用户转述成本后携带 confirm:true 重调` },
             }
           }
-
-          const provider = ctx.providersOverride
-            ? ctx.providersOverride.forModel(videoModel, { fetchImpl })
-            : providerForModel(channel, videoModel, { fetchImpl, estimate: pricing ? (m: string) => estimateCny(m, pricing) : undefined })
 
           const backup = join(runDir, 'clips', `${shotFileBase(shot)}.rejected-${entry.retries + 1}.mp4`)
           renameSync(clip, backup)
@@ -173,6 +175,13 @@ export function buildReviewTools(ctx: ReviewContext): {
               },
             })
           } catch (err) {
+            if (err instanceof ModelUnavailableError || isExplicitModelUnavailable(err)) {
+              if (existsSync(clip)) rmSync(clip)
+              renameSync(backup, clip)
+              throw err instanceof ModelUnavailableError
+                ? err
+                : modelUnavailableFrom(channel, 'video', videoModel, err instanceof Error ? err.message : String(err))
+            }
             // 无条件回滚：saveUrl 中途失败可能留下半截新片，先删再复位旧片（备份恒存在——刚 rename 过来的）
             if (existsSync(clip)) rmSync(clip)
             renameSync(backup, clip)
@@ -197,6 +206,7 @@ export function buildReviewTools(ctx: ReviewContext): {
             },
           }
         } catch (err) {
+          if (err instanceof ModelUnavailableError) return { ok: false, error: { code: err.code, message: err.message } }
           if (err instanceof HandoffError) return { ok: false, error: { code: err.code, message: err.message } }
           return { ok: false, error: { code: 'internal', message: err instanceof Error ? err.message : String(err) } }
         }

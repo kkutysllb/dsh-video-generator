@@ -15,6 +15,7 @@ import { locateFfmpeg } from '../finalcut/render-ffmpeg.ts'
 import type { CloudTtsConfig } from '../finalcut/voice.ts'
 import type { ToolResult } from './handoff.ts'
 import { HandoffError } from '../schema/handoff.ts'
+import { ModelUnavailableError } from '../model-selection.ts'
 
 export interface GenerateContext {
   vault: VaultStore
@@ -30,8 +31,20 @@ export interface GenerateContext {
   providersOverride?: { forModel: MachineDeps['providers']['forModel'] }
   /** 测试注入：下载用 fetch。 */
   fetchImpl?: typeof fetch
-  /** 测试注入：云端 TTS 配置。生产路径从 env（VGEN_TTS_MODEL/VGEN_TTS_VOICE/VGEN_TTS_INSTRUCTIONS）解析。 */
+  /** 测试注入：云端 TTS 配置；生产路径按当前通道 models[] 动态选择。 */
   tts?: CloudTtsConfig
+}
+
+export function configuredCloudTts(channel: ChannelRef, env: NodeJS.ProcessEnv = process.env): CloudTtsConfig | undefined {
+  const model = channel.models?.find((entry) => entry.kind === 'tts' && entry.model.trim())
+  if (!model) return undefined
+  return {
+    baseUrl: channel.baseUrl,
+    apiKey: channel.apiKey,
+    model: model.model.trim(),
+    voice: env['VGEN_TTS_VOICE'] || undefined,
+    instructions: env['VGEN_TTS_INSTRUCTIONS'] || undefined,
+  }
 }
 
 export interface GenerateArgs {
@@ -115,9 +128,8 @@ export function buildGenerateTools(ctx: GenerateContext): {
               return false
             },
             ffmpeg: locateFfmpeg(env),
-            // 视频模型覆盖：上游分组饱和时换档（如 happyhorse→wan2.6-i2v），缺省走 machine 内置
-            videoModel: env['VGEN_VIDEO_MODEL'] || undefined,
-            tts: ctx.tts ?? (env['VGEN_TTS_MODEL'] ? { baseUrl: channel.baseUrl, apiKey: channel.apiKey, model: env['VGEN_TTS_MODEL'], voice: env['VGEN_TTS_VOICE'] || undefined, instructions: env['VGEN_TTS_INSTRUCTIONS'] || undefined } : undefined),
+            // 生产模型只来自当前默认通道 models[]；videoModel 仅保留 MachineDeps 的内部测试注入字段。
+            tts: ctx.tts ?? configuredCloudTts(channel, env),
             concurrency: typeof args['concurrency'] === 'number' ? args['concurrency'] : undefined,
             fetchImpl: ctx.fetchImpl,
           })
@@ -133,6 +145,9 @@ export function buildGenerateTools(ctx: GenerateContext): {
             },
           }
         } catch (err) {
+          if (err instanceof ModelUnavailableError) {
+            return { ok: false, error: { code: err.code, message: err.message } }
+          }
           if (denied > 0) {
             return {
               ok: false,

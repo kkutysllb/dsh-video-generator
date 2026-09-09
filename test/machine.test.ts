@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { advanceRun } from '../src/pipeline/machine.ts'
+import { ModelUnavailableError } from '../src/model-selection.ts'
 import { RelayError } from '../src/providers/relay-http.ts'
 import { RunStore } from '../src/store/runs.ts'
 import { STORY, SCRIPT, SHOTS } from './schema-fixtures.ts'
@@ -51,11 +52,79 @@ function setup() {
 }
 
 const BASE = {
-  channel: { id: 've', baseUrl: 'https://x.example', apiKey: 'k' },
+  channel: {
+    id: 've',
+    baseUrl: 'https://x.example',
+    apiKey: 'k',
+    models: [
+      { model: 'configured-image', kind: 'image' as const },
+      { model: 'configured-video', kind: 'video' as const },
+    ],
+  },
   pricing: null,
   concurrency: 2,
   fetchImpl: fetchFake,
 }
+
+test('advanceRun 使用默认通道 models，不使用内置 image/video 默认值', async () => {
+  const s = setup()
+  try {
+    const requested: string[] = []
+    const providers = {
+      forModel: (model: string) => {
+        requested.push(model)
+        return model === 'configured-video'
+          ? fakeVideoProvider()
+          : fakeImageProvider(`https://img.example/${model}.png`)
+      },
+    }
+    await advanceRun({ ...BASE, runs: s.runs, runId: s.run.id, target: 'video', providers, confirmer: async () => true, ffmpeg: null, pollDelayMs: 1 })
+    assert.ok(requested.includes('configured-image'))
+    assert.ok(requested.includes('configured-video'))
+    assert.ok(!requested.some((model) => /happyhorse|doubao-seedream/.test(model)))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('advanceRun provider 不支持 image-to-video 时在 confirmer 前返回 model-unavailable', async () => {
+  const s = setup()
+  try {
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    s.runs.setStage(s.run.id, 'shot-assets', 'done')
+    s.runs.appendEvent(s.run.id, 'shot-urls', { urls: [{ index: 1, url: 'https://oss.example/ref-1.png', file: join(s.rd, 'shots', 'shot-001.png') }] })
+    let confirmCalls = 0
+    const textOnlyVideo = {
+      ...fakeVideoProvider(),
+      capabilities: { textToVideo: true, qualityTier: 5 },
+    }
+    const providers = {
+      forModel: (model: string) => model === 'configured-video'
+        ? textOnlyVideo
+        : fakeImageProvider(`https://img.example/${model}.png`),
+    }
+    await assert.rejects(
+      advanceRun({
+        ...BASE,
+        runs: s.runs,
+        runId: s.run.id,
+        target: 'video',
+        providers,
+        confirmer: async () => { confirmCalls++; return true },
+        ffmpeg: null,
+        pollDelayMs: 1,
+      }),
+      (err: unknown) => err instanceof ModelUnavailableError
+        && err.code === 'model-unavailable'
+        && err.message.includes('configured-video')
+        && err.message.includes('image-to-video'),
+    )
+    assert.equal(confirmCalls, 0)
+    assert.equal(s.runs.get(s.run.id)!.events.filter((e) => e.type === 'spend' && e.detail?.['stage'] === 'video').length, 0)
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
 
 test('advanceRun assets+video：三视图/场景/参考图/克隆下载落盘，断点续跑跳过已完成段', async () => {
   const s = setup()

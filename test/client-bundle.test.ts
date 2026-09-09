@@ -77,6 +77,17 @@ test('apply：无 document 环境（node）不炸——样式/导航图标注入
   assert.doesNotThrow(() => (mod['apply'] as (c: unknown) => void)(ctx))
 })
 
+test('bundle：模型行支持草稿移除、保存空列表，且不保留未勾选旧模型', () => {
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  assert.match(code, /pickerRemove/)
+  assert.match(code, /aria-label/)
+  assert.match(code, /title:/)
+  assert.match(code, /props\.onChange\(Object\.assign\(\{\}, picker, \{ rows:/)
+  assert.match(code, /patch: \{ models: submitted \}/)
+  assert.doesNotMatch(code, /未勾选但已配置/)
+  assert.doesNotMatch(code, /checked\.size === 0/)
+})
+
 test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {
   const { mod } = loadBundle()
   let dictRef: { current: { zh: Record<string, string>; en: Record<string, string> } | null } = { current: null }
@@ -95,9 +106,9 @@ test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {
     'pickerSearch', 'pickerFilterKind', 'pickerFilterAll',
     'pickerSelectAll', 'pickerDeselectAll', 'pickerSave',
     'pickerEmpty', 'pickerLabelConfigured', 'pickerLabelNew',
-    'pickerKindImage', 'pickerKindVideo', 'pickerKindTts', 'pickerSaved',
+    'pickerKindImage', 'pickerKindVideo', 'pickerKindTts', 'pickerSaved', 'pickerRemove',
     'pickerTitle', 'pickerCountUnit', 'pickerCheckedHintPrefix',
-    'pickerStatCheckedPrefix', 'pickerStatKeepPrefix',
+    'pickerStatCheckedPrefix', 'pickerStatRemovedPrefix',
   ]
   for (const k of required) {
     // 注：允许空字符串（en.pickerCountUnit = '' 是合法设计——英文复数不分单复）

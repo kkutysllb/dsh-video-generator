@@ -305,6 +305,26 @@ test('M4: resolveMediaPath 拒绝穿越/绝对路径/空段/非法 runId', () =>
   assert.equal(resolveMediaPath('/runs-root', '/media/run-1/sub/../shot.png'), null)
 })
 
+
+
+test('channels.update 保存 models: [] 后真正删除未提交模型', () => {
+  const c = ctx()
+  try {
+    handleApi(c.api, 'channels.create', {
+      id: 'models-empty',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-vgen-12345678',
+      models: [{ model: 'configured-image', kind: 'image' }, { model: 'configured-video', kind: 'video' }],
+    })
+    const updated = handleApi(c.api, 'channels.update', { id: 'models-empty', patch: { models: [] } }) as { ok: boolean; value?: { models: unknown[] } }
+    assert.equal(updated.ok, true)
+    assert.deepEqual(c.vault.getChannel('models-empty')?.models, [])
+    assert.deepEqual((updated.value?.models ?? []), [])
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
 test('M4: mediaContentType 映射 + 缺省 octet-stream', () => {
   assert.equal(mediaContentType('a.png'), 'image/png')
   assert.equal(mediaContentType('a.MP4'), 'video/mp4')

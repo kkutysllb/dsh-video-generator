@@ -20,6 +20,15 @@ test('registry：图像家族路由判定与目录一致', () => {
   assert.equal(qwen.id, 'openai-images:qwen-image-max')
 })
 
+test('registry：显式 channel kind 让未知 video 模型走可用的 image-to-video Provider', () => {
+  const custom = providerForModel({
+    ...CHANNEL,
+    models: [{ model: 'relay-custom-video', kind: 'video' }],
+  }, 'relay-custom-video')
+  assert.equal(custom.id, 'dashscope-relay:relay-custom-video')
+  assert.equal(custom.capabilities.imageToVideo, true)
+})
+
 test('registry：tts 形态给出清晰错误', () => {
   assert.throws(() => providerForModel(CHANNEL, 'gpt-4o-mini-tts'), /尚未支持/)
 })

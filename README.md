@@ -45,8 +45,8 @@ plugin load) — or just state your request; the capability announcement routes 
   `VGEN_FFMPEG` 指向完整构建，如 bilibili 客户端自带版）。
   Node ≥ 24; ffmpeg must include the `drawtext` filter (set `VGEN_FFMPEG` if your
   build lacks it).
-- 生成通道：任一 OpenAI 兼容端点或中转站（设置页「通道管理」填三要素即可）。
-  Any OpenAI-compatible endpoint or relay; configure it in the settings page.
+- 生成通道：任一 OpenAI 兼容端点或中转站（设置页「通道管理」填写 Base URL、API Key 和 `models[]` 即可）。
+  Any OpenAI-compatible endpoint or relay; configure Base URL, API Key, and `models[]` in the settings page.
 
 每个版本的变更说明（新增 / 变更 / 修复 / 删除 / 兼容性）见 [`release/`](release/)；
 `package.json` 的 `version` 是插件管理检测新版本的信号，更新由用户手动触发。
@@ -76,19 +76,18 @@ drives update detection.
 ## 设置页（Web 设置 →「视频工坊」，双 tab）
 
 - **工坊**：run 列表与进度、阶段状态/gate/评审结果、产物预览（角色/场景主图、分镜参考图、镜头片段、评审帧、成片）、预估花费。
-- **通道管理**：三要素（Base URL / API Key / Model）自配置，官方/中转皆可；测试通道（探测枚举模型）、一键导入、默认通道切换、单笔确认阈值（CNY）与 gate 缺省。API Key 只存本机 vault（0600），任何界面/响应仅回显脱敏串。
+- **通道管理**：Base URL / API Key 与 `models[]` 自配置，模型项带 `kind`（`image` / `video` / `tts`），官方/中转皆可；支持测试通道（探测枚举模型）、一键导入、模型逐行移除、保存空列表、默认通道切换、单笔确认阈值（CNY）与 gate 缺省。API Key 只存本机 vault（0600），任何界面/响应仅回显脱敏串。
 
 ## 环境变量
 
 | 变量 | 作用 | 缺省 |
 |---|---|---|
 | `VGEN_AUTO_CONFIRM` | demo 脚本（`scripts/demo-*.ts`）非交互终端的成本确认放行，须显式 `=1` | 未设（交互逐笔询问，非交互拒绝） |
-| `VGEN_TTS_MODEL` | 云端 TTS 模型名（走默认通道的 baseUrl/apiKey；设置即启用云配音） | 未设（回退本地 say/SAPI） |
-| `VGEN_TTS_VOICE` | 云端 TTS 音色 | 未设（服务端缺省） |
+| `models[]` | 默认通道的模型清单；每项 `{ model, kind }`，各 `kind` 按列表第一项选择 | 未配置时返回 `model-unavailable` |
+| `VGEN_TTS_VOICE` | 云端 TTS 音色（云端模型由默认通道首个 `kind=tts` 决定） | 未设（服务端缺省） |
 | `VGEN_TTS_INSTRUCTIONS` | 云端 TTS 旁白语气指令 | 未设 |
 | `VGEN_FFMPEG` | ffmpeg 可执行路径（须含 drawtext；Homebrew 精简构建常见缺失） | `ffmpeg`（PATH） |
 | `VGEN_POLL_DELAY_MS` | i2v 轮询间隔覆盖（demo 提速用） | 1000 |
-| `VGEN_VIDEO_MODEL` | video 段与评审重拍的视频模型覆盖（上游分组饱和时换档，如 `wan2.6-i2v-flash`） | 内置缺省（happyhorse-1.1-i2v） |
 | `VGEN_ALLOW_INSECURE` | `=1` 允许 `http://` baseUrl（仅本地调试） | 未设（强制 https） |
 
 ## 画幅策略

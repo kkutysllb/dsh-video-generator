@@ -15,6 +15,7 @@ import { buildCharacterSheetPrompt, buildScenePrompt, buildShotPrompt } from '..
 import { STAGES, type StageId } from '../stages.ts'
 import { retryTransient } from '../poll.ts'
 import { RelayError } from '../providers/relay-http.ts'
+import { isExplicitModelUnavailable, ModelUnavailableError, modelUnavailableFrom, selectConfiguredModel } from '../model-selection.ts'
 import { generateShotClip, saveUrl, SHOT_MOTION_PROMPT } from './shot-clip.ts'
 import { buildTimeline, writeSrt, type TimelineData, Timeline } from '../finalcut/timeline.ts'
 import { renderTimeline, probeDurationSec } from '../finalcut/render-ffmpeg.ts'
@@ -42,8 +43,30 @@ export interface MachineDeps {
   pollDelayMs?: number
 }
 
-const IMAGE_MODEL_DEFAULT = 'doubao-seedream-4-0-250828'
-export const VIDEO_MODEL_DEFAULT = 'happyhorse-1.1-i2v'
+function selectStageModel(deps: MachineDeps, kind: 'image' | 'video', injected?: string): string {
+  return injected ?? selectConfiguredModel(deps.channel, kind)
+}
+
+function requireCapability(
+  channel: ChannelRef,
+  kind: 'image' | 'video',
+  model: string,
+  provider: Provider,
+): void {
+  const capability = kind === 'image' ? 'image' : 'imageToVideo'
+  if (!provider.capabilities[capability]) {
+    const readableCapability = kind === 'image' ? 'image' : 'image-to-video'
+    throw modelUnavailableFrom(channel, kind, model, `Provider ${provider.id} 不支持 ${readableCapability}`)
+  }
+}
+
+function wrapExplicitModelError(channel: ChannelRef, kind: 'image' | 'video', model: string, err: unknown): Error {
+  if (err instanceof ModelUnavailableError) return err
+  if (isExplicitModelUnavailable(err)) {
+    return modelUnavailableFrom(channel, kind, model, err instanceof Error ? err.message : String(err))
+  }
+  return err instanceof Error ? err : new Error(String(err))
+}
 
 /** 9:16 画布用竖版参考图（2:3 为中转普遍支持的最接近竖档，渲染端 crop 归一化消黑边）。 */
 const IMAGE_SIZE_PORTRAIT = '1024x1536'
@@ -58,7 +81,7 @@ async function submitImageWithSize(
   try {
     return (await p.submit(stage, { prompt, size })).jobId
   } catch (err) {
-    if (err instanceof RelayError && err.status === 400) {
+    if (err instanceof RelayError && err.status === 400 && !isExplicitModelUnavailable(err)) {
       onFallback()
       return (await p.submit(stage, { prompt })).jobId
     }
@@ -146,6 +169,13 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
   const result: AdvanceResult = { runId, stages: { ...record.stages } }
   const gates = deps.gates ?? {}
 
+  // 先校验后序 video 模型，避免前序 image 阶段确认后才发现模型不可用。
+  if (targetIdx >= STAGES.indexOf('video') && record.stages['video'] !== 'done') {
+    const videoModel = selectStageModel(deps, 'video', deps.videoModel)
+    const videoProvider = deps.providers.forModel(videoModel, { fetchImpl })
+    requireCapability(deps.channel, 'video', videoModel, videoProvider)
+  }
+
   const ensureGate = async (stage: StageId, info: string): Promise<void> => {
     const mode = gates[stage] ?? 'auto'
     if (mode === 'manual') throw new ManualGateError(`段 ${stage} 为 manual 模式：请先在会话中提供该段产物（文件/JSON）后再推进`)
@@ -173,8 +203,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       const script = readJson<{ characters: Array<{ id: string; name: string; appearance: string }>; scenes: Array<{ id: string; name: string; description: string }>; style?: string }>(runs, runId, 'script')
       const assetDir = join(runs.rootDir, runId, 'assets')
       mkdirSync(assetDir, { recursive: true })
-      const imageModel = deps.imageModel ?? IMAGE_MODEL_DEFAULT
+      const imageModel = selectStageModel(deps, 'image', deps.imageModel)
       const p = deps.providers.forModel(imageModel, { fetchImpl })
+      requireCapability(deps.channel, 'image', imageModel, p)
       const jobs: Array<{ file: string; prompt: string; size: string }> = [
         ...script.characters.map((c) => ({
           file: join(assetDir, `char-${c.id}.png`),
@@ -203,7 +234,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         done(st)
       } catch (err) {
         runs.setStage(runId, st, 'failed')
-        throw err
+        throw wrapExplicitModelError(deps.channel, 'image', imageModel, err)
       }
     }
   }
@@ -217,8 +248,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       const sb = readJson<{ shots: Array<{ index: number; prompt: string; characterIds: string[]; camera?: string }> }>(runs, runId, 'storyboard')
       const shotsDir = join(runs.rootDir, runId, 'shots')
       mkdirSync(shotsDir, { recursive: true })
-      const imageModel = deps.imageModel ?? IMAGE_MODEL_DEFAULT
+      const imageModel = selectStageModel(deps, 'image', deps.imageModel)
       const p = deps.providers.forModel(imageModel, { fetchImpl })
+      requireCapability(deps.channel, 'image', imageModel, p)
       const shotImages: Array<{ index: number; url: string; file: string }> = []
       try {
         begin(st)
@@ -250,7 +282,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         done(st)
       } catch (err) {
         runs.setStage(runId, st, 'failed')
-        throw err
+        throw wrapExplicitModelError(deps.channel, 'image', imageModel, err)
       }
     } else {
       // 断点续跑：从事件流恢复 shot-urls（i2v 输入）
@@ -271,8 +303,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       if (!shotUrls?.length) throw new Error('缺少 shot 参考图 URL：请先完成 shot-assets 段')
       const clipsDir = join(runs.rootDir, runId, 'clips')
       mkdirSync(clipsDir, { recursive: true })
-      const videoModel = deps.videoModel ?? VIDEO_MODEL_DEFAULT
+      const videoModel = selectStageModel(deps, 'video', deps.videoModel)
       const p = deps.providers.forModel(videoModel, { fetchImpl })
+      requireCapability(deps.channel, 'video', videoModel, p)
       const clipFiles: string[] = []
       try {
         begin(st)
@@ -295,6 +328,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
               },
             })
           } catch (err) {
+            if (isExplicitModelUnavailable(err) || err instanceof ModelUnavailableError) {
+              throw wrapExplicitModelError(deps.channel, 'video', videoModel, err)
+            }
             // 保留 shot 上下文前缀（原实现的判别性消息形态）
             throw new Error(`shot ${shot.index}: ${err instanceof Error ? err.message : String(err)}`)
           }
@@ -346,6 +382,9 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
               audioDurUs = Math.round(((await probeDurationSec(mp3, deps.ffmpeg)) ?? 0) * 1e6)
               voice = null
             } catch (err) {
+              if (isExplicitModelUnavailable(err)) {
+                throw modelUnavailableFrom(deps.channel, 'tts', deps.tts.model, err instanceof Error ? err.message : String(err))
+              }
               runs.appendEvent(runId, 'tts-fallback', { shot: shot.index, reason: err instanceof Error ? err.message : String(err) })
               voice = resolveVoice({ voiceHint: text }, process.platform)
             }
