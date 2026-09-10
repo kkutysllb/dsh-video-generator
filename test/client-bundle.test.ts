@@ -61,10 +61,19 @@ test('apply：注册 locale 字典（videoGen zh/en 均含 nav）+ settings.sect
   assert.equal(ns, 'videoGen')
   const dicts = dictRef.current
   assert.ok(dicts && dicts.zh['nav'] && dicts.en['nav'])
-  assert.equal(registered.length, 1)
+  // 0.1.5 左侧栏接入：settings.section 之外追加 sidebar.panellist（图标）
+  // 与 main（主面板）两段注册，settings 断言按注册顺序定位。
+  assert.ok(registered.length >= 3, `至少 3 段注册（settings/panellist/main），实际 ${registered.length}`)
   assert.equal(registered[0]!['name'], 'settings.section')
   assert.equal(registered[0]!['id'], 'video-generator')
   assert.equal(typeof registered[0]!['label'], 'function')
+  const names = registered.map((r) => r['name'])
+  assert.ok(names.includes('sidebar.panellist'), '缺 sidebar.panellist 注册')
+  assert.ok(names.includes('main'), '缺 main 注册')
+  const panellist = registered.find((r) => r['name'] === 'sidebar.panellist')
+  const main = registered.find((r) => r['name'] === 'main')
+  assert.equal(panellist!['id'], 'vgen-panel')
+  assert.equal(main!['key'], 'vgen-panel', 'main 与 panellist 必须同 id')
 })
 
 test('apply：无 document 环境（node）不炸——样式/导航图标注入全部守卫', () => {
