@@ -38,7 +38,7 @@ test('bundle 自注册 id = dsh-video-generator，exports.apply/inject 契约', 
   const { mod, captured } = loadBundle()
   assert.equal(captured.id, 'dsh-video-generator')
   assert.equal(typeof mod['apply'], 'function')
-  assert.deepEqual(mod['inject'], ['slots', 'locale'])
+  assert.deepEqual(mod['inject'], ['slots', 'locale', 'sessions', 'uiConversation', 'layout'])
 })
 
 test('apply：注册 locale 字典（videoGen zh/en 均含 nav）+ settings.section（id/order）', () => {
