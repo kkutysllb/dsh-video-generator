@@ -159,7 +159,7 @@ test('bundle：漫剧工坊契约——PANEL_ID、drama RPC 面、提案闭环�
 test('bundle：漫剧工坊双语词典键齐备（zh/en 同步）', () => {
   const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
   for (const key of [
-    'wbTitle', 'newProject', 'emptyProjects', 'wizTitle', 'fLogline', 'create',
+    'wbTitle', 'newProject', 'emptyProjects', 'wizTitle', 'fLogline', 'create', 'wizConfirmHint',
     'stageOverview', 'stagePremise', 'stageArch', 'stageWorld', 'stageChars', 'stageOutline', 'stageChapter', 'stageAdapt', 'stageRuns',
     'agentPanel', 'pendingProposals', 'statusWriting', 'statusPendingReview', 'statusAdapting', 'statusDone',
     'subBlueprint', 'subDraft', 'subReview', 'subFinal', 'finalize', 'adaptCreate', 'instructCopied', 'registryMissing', 'channelWarn',

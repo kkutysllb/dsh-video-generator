@@ -362,6 +362,10 @@ function strArray(v: unknown, field: string, maxItems: number, maxLen: number): 
 
 /* ── 资产 sanitizer（读写共用；throw = 调用方决定降级或拒绝） ── */
 
+// 梗概是用户建项目时整段粘贴的入口（常见几千字），上限放宽到 2 万字符；
+// 读写共用 sanitizer，此上限改动对存量数据天然兼容（只可能更宽松）。
+export const PREMISE_LOGLINE_MAX = 20_000
+
 function sanitizePremise(v: unknown): PremiseAsset {
   const o = asObject(v, 'premise')
   return {
@@ -369,7 +373,7 @@ function sanitizePremise(v: unknown): PremiseAsset {
     category: str(o['category'], 'premise.category', 40),
     language: str(o['language'], 'premise.language', 20),
     audience: str(o['audience'], 'premise.audience', 200),
-    logline: str(o['logline'], 'premise.logline', 600),
+    logline: str(o['logline'], 'premise.logline', PREMISE_LOGLINE_MAX),
     theme: str(o['theme'], 'premise.theme', 300),
     tone: str(o['tone'], 'premise.tone', 200),
     plannedChapters: intIn(o['plannedChapters'], 'premise.plannedChapters', 1, 500),

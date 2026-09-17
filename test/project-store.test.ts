@@ -54,6 +54,26 @@ test('同名活动项目 → project-exists（验收 5）', () => {
   }
 })
 
+test('整段粘贴的长梗概可建项目（>600 字），超 2 万字符上限 → bad-request', () => {
+  const ws = tmpWorkspace()
+  try {
+    const store = ProjectStore.open({ workspaceDir: ws })
+    // 真实场景：用户把整段故事梗概粘进向导（数千字）
+    const long = '徐骁为她死缠烂打，她为他亲手缝了一双布鞋。'.repeat(120) // 21 字 × 120 ≈ 2520 字
+    const m = store.create({ ...premiseInput(), logline: long })
+    const premise = JSON.parse(readFileSync(
+      join(ws, '.dsh-drama', 'projects', m.id, 'story', 'premise.json'), 'utf8')) as { logline: string }
+    assert.equal(premise.logline, long.trim())
+    // 上限仍然存在：超过 2 万字符拒绝
+    assert.throws(
+      () => store.create({ ...premiseInput(), title: '超限项目', logline: '长'.repeat(20_001) }),
+      (err: DramaError) => err.code === 'bad-request',
+    )
+  } finally {
+    rmSync(ws, { recursive: true, force: true })
+  }
+})
+
 test('writeAsset 乐观并发：旧 revision 提交 → stale-revision 且文件未被改动（验收 6）', () => {
   const ws = tmpWorkspace()
   try {
