@@ -318,11 +318,11 @@ src/tools/drama.ts      # drama_read / drama_propose 工具（Agent 用，见 §
 | `drama.proposal.list` | `{workspaceId, projectId, status?}` | 提案数组 |
 | `drama.proposal.apply` | `{workspaceId, projectId, proposalId, replacement?}` | `{revision}`（replacement 为用户编辑后的最终内容；缺省用提案原文） |
 | `drama.proposal.reject` | `{workspaceId, projectId, proposalId, note?}` | `{}` |
-| `drama.task.create` | `{workspaceId, projectId, kind, params, instruction}` | `{taskId, sessionId?}` |
+| `drama.task.create` | `{workspaceId, projectId, kind, params?, userRequest?}` | `{taskId, instruction}`（instruction 由 Host 按 §6.3 模板组装） |
 | `drama.task.update` | `{workspaceId, projectId, taskId, patch}` | task（状态/事件/错误由 Host 与工具回报共同维护） |
 | `drama.adaptation.create` | `{workspaceId, projectId, chapterId, params}` | `{adaptationId, runId, taskId}` |
 
-`instruction` 为页面组装好的**结构化任务指令文本**（见 §6.3），Host 原样转交会话发送桥；Host 不解析其语义。
+`instruction` 由 **Host 按 kind 模板（见 §6.3）在服务端组装**：页面只提交 kind/params/用户要求，上下文裁剪（本章蓝图 + 出场角色摘要 + 相关世界观条目 + 上一章相邻定稿）在 Host 完成——「有限上下文」由此成为可单测断言的 Host 纯函数（对应验收 10）。Host 组装后把指令文本随任务记录持久化，会话发送桥（M3 客户端）原样转发；Host 不在发送层再解析其语义。
 
 ---
 
@@ -334,8 +334,8 @@ src/tools/drama.ts      # drama_read / drama_propose 工具（Agent 用，见 §
 
 | 工具 | 语义 |
 |---|---|
-| `drama_read` | `{workspaceId, assetRef}` → 权威资产内容 + revision + 项目摘要。**有界读取**：资产级返回，单次最多一个资产；草稿超长截断并报告截断。 |
-| `drama_propose` | `{workspaceId, assetRef, baseRevision, replacement, summary}` → 落提案（pending），**绝不直接写权威文件**。baseRevision 失配 → `stale-revision`，Agent 须重读后再提案。 |
+| `drama_read` | `{workspaceId, projectId, assetRef}` → 权威资产内容 + revision。**有界读取**：资产级返回，单次最多一个资产；内容超过 512KiB 截断并报告截断。 |
+| `drama_propose` | `{workspaceId, projectId, assetRef, baseRevision, replacement, summary, sessionId?}` → 落提案（pending），**绝不直接写权威文件**。baseRevision 失配 → `stale-revision`，Agent 须重读后再提案。 |
 
 纪律写进工具描述与能力通告：先 `drama_read` 取最新 revision → 产出建议 → `drama_propose` 一次性提交完整替换内容 → 在收到"用户已应用"前不得声称已保存。视频段继续用 vgen_*（story/script/storyboard/generate/review/provide/channels）。
 
@@ -343,7 +343,7 @@ src/tools/drama.ts      # drama_read / drama_propose 工具（Agent 用，见 §
 
 页面"生成/改写"按钮 → `drama.task.create`（Host 记任务）→ 复用现有 sessions 桥创建或复用普通会话 → 把 `instruction` 发入会话。会话归属项目（task.sessionId）；右侧 Agent 面板可随时 `sessions.open` 跳转。旧会话关闭/换预设均不影响项目数据。
 
-### 6.3 任务指令模板（页面组装，结构化文本）
+### 6.3 任务指令模板（Host 组装，kind 驱动）
 
 ```text
 [漫剧工坊任务]
