@@ -136,6 +136,13 @@ function dispatch(host: DramaHost, name: string, args: Args): unknown {
       }
     }
 
+    case 'drama.asset.get': {
+      // 页面读取资产内容（diff 基线 / 章节正文按需拉取）；§5 表之外的只读补充方法
+      const ws = host.requireProject(args['workspaceId'], args['projectId'])
+      const asset = ws.projects.readAsset(requireString(args['projectId'], 'projectId'), requireString(args['assetRef'], 'assetRef'))
+      return asset
+    }
+
     case 'drama.asset.update': {
       const ws = host.requireProject(args['workspaceId'], args['projectId'])
       const { revision } = ws.projects.writeAsset(
@@ -145,6 +152,25 @@ function dispatch(host: DramaHost, name: string, args: Args): unknown {
         args['replacement'],
       )
       return { revision }
+    }
+
+    case 'drama.candidate.save': {
+      const ws = host.requireProject(args['workspaceId'], args['projectId'])
+      const saved = ws.projects.saveCandidate(
+        requireString(args['projectId'], 'projectId'),
+        typeof args['chapter'] === 'number' ? args['chapter'] : Number.NaN,
+        requireString(args['content'], 'content'),
+      )
+      return saved
+    }
+
+    case 'drama.candidate.list': {
+      const ws = host.requireProject(args['workspaceId'], args['projectId'])
+      const candidates = ws.projects.listCandidates(
+        requireString(args['projectId'], 'projectId'),
+        typeof args['chapter'] === 'number' ? args['chapter'] : Number.NaN,
+      )
+      return { candidates }
     }
 
     case 'drama.proposal.list': {

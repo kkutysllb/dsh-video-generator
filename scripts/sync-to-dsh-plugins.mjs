@@ -28,7 +28,7 @@ const PLUGINS_DIR = process.env.KCODER_PLUGINS_DIR
 const MIRROR = join(PLUGINS_DIR, 'dsh-video-generator')
 
 // 与 package.json files 白名单一致 + LICENSE
-const INCLUDE = ['package.json', 'cordis.patch.yml', 'README.md', 'LICENSE', 'lib', 'presets', 'release']
+const INCLUDE = ['package.json', 'cordis.patch.yml', 'README.md', 'LICENSE', 'lib', 'release']
 
 function listFiles(root) {
   const out = []

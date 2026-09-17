@@ -30,14 +30,12 @@ KCoder 桌面端的 profile 在 `~/.kcoder/profiles/web`，给桌面端装插件
 DSH_HOME=~/.kcoder dsh plugin --profile web add dsh-video-generator
 ```
 
-插件的「漫剧导演」预设也随之落到 `<DSH_HOME>/.agent-presets/dsh-video-generator/`，
-与安装目标同一 home 语义。
+装好后打开侧边栏「**漫剧工坊**」即可开始：项目制创作（小说/剧情 → 漫剧改编 → 成片），
+也可以直接在对话里说需求，能力通告会引导路由。
 
-装好后切换 Agent 预设「**漫剧导演**」即可开始（插件加载时自动安装预设；也可不切预设，
-直接在对话里说需求，能力通告会引导路由）。
-
-Switch to the **Comic-Drama Director** agent preset after install (auto-installed on
-plugin load) — or just state your request; the capability announcement routes it.
+Open the **Drama Workbench** in the sidebar after install: project-based creation
+(novel/drama → comic-drama adaptation → final cut). Or just state your request in
+chat; the capability announcement routes it.
 
 环境要求 / Requirements：
 
@@ -54,11 +52,21 @@ plugin load) — or just state your request; the capability announcement routes 
 Per-version changes live under [`release/`](release/); the `package.json` version
 drives update detection.
 
+## 漫剧工坊（2.0 新增）
+
+侧边栏「漫剧工坊」是独立主面板：项目制小说/剧情创作工作台。项目数据持久化在 workspace
+的 `.dsh-drama/projects/<projectId>/`（JSON/Markdown + 版本号），可 Git 管理、跨会话恢复。
+
+- **创作链**：灵感与前提 → 故事架构 → 世界观 → 角色 → 剧情大纲 → 章节工作台（蓝图/草稿/审稿/定稿）→ 漫剧改编。
+- **提案闭环**：Agent 的一切内容产出先落 Proposal（`drama_propose`，绝不直写权威文件），用户在页面查看 diff、可编辑后显式「应用」（乐观并发：版本失配即拒绝并提示刷新）。
+- **任务指令**：页面「AI 生成」按钮由 Host 组装**有限上下文**的任务指令（本章蓝图 + 出场角色摘要 + 相关世界观 + 上一章定稿末段，绝不携带整本书），经剪贴板桥送入普通会话执行。
+- **漫剧改编**：选定章节一键创建改编任务，Agent 走 vgen_story → vgen_script → vgen_storyboard（三段产物镜像回项目 + run-link 记录），后续 vgen_generate 照旧（confirm/gate/评审闭环不变）。
+
 ## 工作流（三段交接）
 
-会话模型自己产出结构化 JSON 并依次调用 `vgen_story → vgen_script → vgen_storyboard`（每步之后用 `vgen_status` 核对状态），之后接 `vgen_generate` 推进非 LLM 段（assets → video → final）。出错按错误信封 `error.code` 处置：`confirm-required` 转述成本后 `confirm:true` 重调；`gate-approval` 用户批准后 `gateApprovals` 重调；`manual-gate` 收用户文件走 `vgen_provide`。
+会话模型自己产出结构化 JSON 并依次调用 `vgen_story → vgen_script → vgen_storyboard`（每步之后用 `vgen_status` 核对状态），之后接 `vgen_generate` 推进非 LLM 段（assets → video → final）。漫剧改编任务中 `vgen_story` 需携带 `workspaceId/projectId/adaptationId`（工具自动镜像产物回项目）。出错按错误信封 `error.code` 处置：`confirm-required` 转述成本后 `confirm:true` 重调；`gate-approval` 用户批准后 `gateApprovals` 重调；`manual-gate` 收用户文件走 `vgen_provide`。
 
-## 工具面（M4，8 个）
+## 工具面（2.0，10 个）
 
 | 工具 | 职责 |
 |---|---|
@@ -70,13 +78,16 @@ drives update detection.
 | `vgen_review` | 质量闭环：不带 `score` 抽成片 25/50/75% 三帧；带 `score` 1-5 评分，≤2 自动追加负面词重拍（每镜 ≤2 次，重拍花费同 confirm 语义） |
 | `vgen_provide` | manual gate 产物注入：master-asset（char-*/scene-*）/ shot-assets / video（全镜覆盖、时长 ≥0.5s）/ final-cut（.mp4 注入即 done） |
 | `vgen_channels` | 通道面板：`list` 脱敏列表 / `health` 探测健康+估价 / `spend` 累计消耗 |
+| `drama_read` | 读漫剧工坊项目的一个权威资产（内容 + revision；512KiB 截断）。提案前必读 |
+| `drama_propose` | 提交内容提案（pending，绝不直写权威文件）；baseRevision 失配 → `stale-revision` 须重读 |
 
 > 偏离说明：规格 §7.1 工具表为 7 个。manual gate 的产物注入需要独立入口，故增设 `vgen_provide`（塞进 `vgen_generate` 会污染其语义）。
 
-## 设置页（Web 设置 →「视频工坊」，双 tab）
+## 设置页（Web 设置 →「漫剧工坊」）
 
-- **工坊**：run 列表与进度、阶段状态/gate/评审结果、产物预览（角色/场景主图、分镜参考图、镜头片段、评审帧、成片）、预估花费。
 - **通道管理**：Base URL / API Key 与 `models[]` 自配置，模型项带 `kind`（`image` / `video` / `tts`），官方/中转皆可；支持测试通道（探测枚举模型）、一键导入、模型逐行移除、保存空列表、默认通道切换、单笔确认阈值（CNY）与 gate 缺省。API Key 只存本机 vault（0600），任何界面/响应仅回显脱敏串。
+- **环境与诊断**（2.0 新增）：ffmpeg/drawtext 检测、TTS 能力、产物根目录、插件版本。
+- run 列表与产物预览已迁往漫剧工坊「视频任务」页（2.0 起设置页不再展示）。
 
 ## 环境变量
 
@@ -102,9 +113,12 @@ drives update detection.
 
 **水印提示**：happyhorse 等免费档视频模型可能带平台水印，介意请在「通道管理」中改用付费模型。
 
-## Agent 预设（漫剧导演，含疗愈绘本题材包）
+## Agent 协作（无预设）
 
-插件加载时自动把 `presets/`（`preset.yml` + `agent.cordis.yml`）幂等安装到 `<DSH_HOME>/.agent-presets/dsh-video-generator/`——跟随宿主 harness home（`DSH_HOME` 优先，未设回退 `~/.dsh`；KCoder 等品牌部署由其启动器注入自己的 home，如 `~/.kcoder`），安装失败静默、不阻断插件加载。宿主预设列表中可直接选用「漫剧导演」：三段交接流程纪律、评审重拍闭环、成本/gate 护栏与「疗愈绘本」题材包（风格词汇/角色原型/节奏模板/负面词）。
+2.0 起不再依赖 Agent 预设（宿主已移除插件预设模式）：普通会话 + 能力通告即可工作。
+漫剧工坊页面负责状态/审核/执行，会话 Agent 负责推理与产出；创作纪律（先 `drama_read`
+取 revision → `drama_propose` 一次性提案 → 用户应用前不得声称已保存）写进工具描述与
+能力通告。
 
 ## 开发
 
