@@ -160,7 +160,7 @@ test('bundle：漫剧工坊双语词典键齐备（zh/en 同步）', () => {
   const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
   for (const key of [
     'wbTitle', 'newProject', 'emptyProjects', 'wizTitle', 'fLogline', 'create', 'wizConfirmHint',
-    'instructCopied', 'instructPrefilled', 'wsAll',
+    'instructCopied', 'instructPrefilled', 'wsAll', 'adaptNoChapters', 'adaptNoChaptersHint',
     'stageOverview', 'stagePremise', 'stageArch', 'stageWorld', 'stageChars', 'stageOutline', 'stageChapter', 'stageAdapt', 'stageRuns',
     'agentPanel', 'pendingProposals', 'statusWriting', 'statusPendingReview', 'statusAdapting', 'statusDone',
     'subBlueprint', 'subDraft', 'subReview', 'subFinal', 'finalize', 'adaptCreate', 'instructCopied', 'registryMissing', 'channelWarn',
