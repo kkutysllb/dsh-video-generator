@@ -20,8 +20,10 @@ import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest, resolveMediaPat
 
 export const name = PLUGIN_ID
 
-/** cordis 依赖声明：这些服务就绪后才 apply（对齐 super-ppts 的模块级 inject 约定）。 */
-export const inject = ['webServer', 'tools', 'systemPrompt']
+/** cordis 依赖声明：这些服务就绪后才 apply（对齐 super-ppts 的模块级 inject 约定）。
+ *  workspaceRegistry 为 2.0 硬依赖（漫剧工坊项目存储解析 workspace 目录；
+ *  automation 插件同款宿主契约，0.1.5+ 提供）。 */
+export const inject = ['webServer', 'tools', 'systemPrompt', 'workspaceRegistry']
 
 /** Agent 能力通告（规格 §9：工作台 + 工具导向，不再引导切换预设）。
  *  漫剧工坊页面管项目/审核/执行；会话 Agent 负责推理与产出，内容一律走提案闭环。 */
@@ -169,7 +171,8 @@ export function apply(ctx: HostContext): () => void {
   ctx.effect(
     () =>
       web.register({
-        kind: 'exact',
+        // 前缀路由：方法名跟在 /drama/ 之后（同 /api 面形态）
+        kind: 'prefix',
         path: `/${PLUGIN_ID}/drama`,
         handler: async (req, res) => {
           if (!isLoopbackRequest(req.headers.host, req.socket.remoteAddress)) {

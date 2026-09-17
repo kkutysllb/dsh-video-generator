@@ -116,7 +116,7 @@ test('apply 注册七条路由并经 effect 管理（含漫剧工坊 drama RPC �
     assert.equal(effects.length, 7)
     assert.equal(routes.get('/dsh-video-generator/runs')!.kind, 'prefix')
     assert.equal(routes.get('/dsh-video-generator/media')!.kind, 'prefix')
-    assert.equal(routes.get('/dsh-video-generator/drama')!.kind, 'exact')
+    assert.equal(routes.get('/dsh-video-generator/drama')!.kind, 'prefix')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
