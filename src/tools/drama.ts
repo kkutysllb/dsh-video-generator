@@ -165,7 +165,7 @@ export function dramaToolDefs(tools: DramaTools): DshToolDefinition[] {
     {
       name: 'drama_propose',
       description:
-        '向漫剧工坊项目提交内容提案（pending），绝不直接写权威文件；用户在工坊页面审核（可编辑）后显式应用才生效。baseRevision 失配返回 stale-revision，须重读后再提案。一次只提案一个资产，replacement 必须是目标资产的完整替换内容。',
+        '向漫剧工坊项目提交内容提案（pending），绝不直接写权威文件；用户在工坊页面审核（可编辑）后显式应用才生效。baseRevision 失配返回 stale-revision，须重读后再提案。一次只提案一个资产，replacement 必须是目标资产的完整替换内容（json 资产提交 JSON 文本，markdown 资产提交原文）。',
       parameters: {
         type: 'object',
         properties: {
@@ -173,7 +173,7 @@ export function dramaToolDefs(tools: DramaTools): DshToolDefinition[] {
           projectId: { type: 'string', description: '项目 id（proj- 前缀）' },
           assetRef: ASSET_REF_PARAM,
           baseRevision: { type: 'string', description: 'drama_read 返回的 revision；资产为空时传 "absent"' },
-          replacement: { type: ['object', 'string'], description: '完整替换内容：json 资产为对象（须符合资产形状），markdown 资产为字符串' },
+          replacement: { type: 'string', description: '完整替换内容：markdown 资产为原文文本；json 资产为符合资产形状的 JSON 文本（插件端解析并做形状校验）' },
           summary: { type: 'string', description: '提案摘要（供用户在审核卡片上快速理解改动）' },
           taskId: { type: 'string', description: '可选：关联任务 id（task- 前缀）' },
           sessionId: { type: 'string', description: '可选：发起会话 id（留痕用）' },

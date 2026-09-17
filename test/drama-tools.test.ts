@@ -2,7 +2,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DramaHost, type WorkspaceRegistryFace } from '../src/drama/gateway.ts'
@@ -147,6 +147,44 @@ test('drama_propose：形状非法 replacement 被拒（与写入同契约）', 
   }
 })
 
+test('drama_propose：harness 序列化场景——json 资产 replacement 为 JSON 字符串可解析入库', async () => {
+  const { tools, projectId, wsDir } = setup()
+  try {
+    const arch = { mainConflict: '传输层冲突', protagonistGoal: 'b', antagonistForce: 'c', cost: '', startingPoint: '', midpointTurn: '', climax: '', ending: '', theme: '', mainline: '', subplots: [], foreshadows: [] }
+    // 真机实测：harness 把联合类型参数序列化成 JSON 字符串再传给插件
+    const ok = (await tools.propose.execute({
+      workspaceId: 'ws1',
+      projectId,
+      assetRef: 'architecture',
+      baseRevision: 'absent',
+      replacement: JSON.stringify(arch),
+      summary: '字符串形态提案',
+    })) as { ok: boolean; value: { proposalId: string } }
+    assert.equal(ok.ok, true)
+    // 提案在审核应用时按同一宽容契约再校验并落盘为规范 JSON
+    const ws = new DramaHost({ registry: registryWith({ ws1: wsDir }) }).resolve('ws1')
+    ws.proposals.apply(projectId, ok.value.proposalId)
+    const stored = JSON.parse(readFileSync(
+      join(wsDir, '.dsh-drama', 'projects', projectId, 'story', 'architecture.json'), 'utf8')) as { mainConflict: string }
+    assert.equal(stored.mainConflict, '传输层冲突')
+
+    // 非 JSON 字符串 → 明确 bad-request（可自修），不是含糊的「须为对象」
+    const bad = await tools.propose.execute({
+      workspaceId: 'ws1',
+      projectId,
+      assetRef: 'architecture',
+      baseRevision: 'absent',
+      replacement: '这不是JSON',
+      summary: '坏字符串',
+    })
+    assert.equal((bad as { ok: boolean }).ok, false)
+    assert.equal((bad as { error: { code: string } }).error.code, 'bad-request')
+    assert.match((bad as { error: { message: string } }).error.message, /合法 JSON/)
+  } finally {
+    rmSync(wsDir, { recursive: true, force: true })
+  }
+})
+
 test('drama 工具定义：名称/必填参数/纪律描述', () => {
   const { host, wsDir } = setup()
   try {
@@ -163,6 +201,9 @@ test('drama 工具定义：名称/必填参数/纪律描述', () => {
     }
     assert.match(proposeDef.description, /绝不直接写权威文件|不直接写权威文件/)
     assert.match(proposeDef.description, /stale-revision/)
+    // 传输层契约：replacement 必须声明为纯 string（harness 会把联合类型参数序列化成字符串）
+    const replacementType = (proposeDef.parameters.properties as Record<string, { type: unknown }>).replacement?.type
+    assert.equal(replacementType, 'string')
     // 渲染契约
     const rendered = readDef.output.render({}, { ok: true })
     assert.equal(rendered[0]!.type, 'text')

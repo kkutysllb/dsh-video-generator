@@ -160,12 +160,17 @@ test('bundle：漫剧工坊双语词典键齐备（zh/en 同步）', () => {
   const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
   for (const key of [
     'wbTitle', 'newProject', 'emptyProjects', 'wizTitle', 'fLogline', 'create', 'wizConfirmHint',
+    'instructCopied', 'instructPrefilled',
     'stageOverview', 'stagePremise', 'stageArch', 'stageWorld', 'stageChars', 'stageOutline', 'stageChapter', 'stageAdapt', 'stageRuns',
     'agentPanel', 'pendingProposals', 'statusWriting', 'statusPendingReview', 'statusAdapting', 'statusDone',
     'subBlueprint', 'subDraft', 'subReview', 'subFinal', 'finalize', 'adaptCreate', 'instructCopied', 'registryMissing', 'channelWarn',
   ]) {
     assert.ok(code.includes(`${key}: "`), `缺词典键 ${key}`)
   }
+  // 指令预填走宿主 uiConversation.fillDraft（SessionId 显式寻址的官方 API），
+  // 且必须保留剪贴板兜底路径（fillDraft 对未挂载输入壳的会话是 no-op）
+  assert.ok(code.includes('.fillDraft(sessionId, text)'), 'sendInstruction 未使用 uiConversation.fillDraft')
+  assert.ok(code.includes('navigator.clipboard.writeText'), '剪贴板兜底路径丢失')
 })
 
 test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {

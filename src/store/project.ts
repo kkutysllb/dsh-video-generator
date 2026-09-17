@@ -533,7 +533,23 @@ function sanitizeMarkdown(v: unknown, label: string): string {
 
 /** 供给 ProposalStore 复用的「校验不落盘」。json 资产返回规范对象，markdown 返回字符串。 */
 export function validateReplacement(assetRef: string, kind: AssetKind, replacement: unknown): unknown {
-  return kind === 'markdown' ? sanitizeMarkdown(replacement, assetRef) : sanitizeJsonAsset(assetRef, replacement)
+  if (kind === 'markdown') return sanitizeMarkdown(replacement, assetRef)
+  // harness 传输层会把 object|string 联合类型参数序列化成 JSON 字符串再传给插件
+  // （真机实测，最小对象复现）：json 资产对字符串宽容——能 parse 就按对象继续校验，
+  // parse 失败给 Agent 可自行修复的明确错误。
+  const value = typeof replacement === 'string' ? parseTransportedJson(replacement, assetRef) : replacement
+  return sanitizeJsonAsset(assetRef, value)
+}
+
+function parseTransportedJson(text: string, assetRef: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new DramaError(
+      'bad-request',
+      `资产 ${assetRef} 的 replacement 收到字符串但不是合法 JSON：json 资产请提交符合资产形状的 JSON 文本，markdown 资产才接收纯文本`,
+    )
+  }
 }
 
 /* ── ProjectStore ─────────────────────────────────────── */
