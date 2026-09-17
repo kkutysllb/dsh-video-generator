@@ -186,6 +186,10 @@ function dispatch(ctx: ApiContext, name: string, args: Record<string, unknown>):
       const d = ctx.vault.load()
       return { defaultChannelId: d.defaultChannelId, budget: d.budget, gateDefaults: d.gateDefaults }
     }
+    case 'diagnostics.get': {
+      // 设置页「环境与诊断」（§8）：异步探测 ffmpeg/drawtext 与 TTS 能力（handleApi 支持 Promise 透传）
+      return import('./diagnostics.ts').then((m) => m.collectDiagnostics({ vault: ctx.vault, runs: ctx.runs, version: PLUGIN_VERSION }))
+    }
     case 'settings.update': {
       // null 不再静默清零：undefined=不更新；非有限数字拒绝
       const t = args['confirmThresholdCny']

@@ -100,21 +100,23 @@ function findApi(routes: Map<string, RegisteredRoute>): RegisteredRoute {
   return r
 }
 
-test('apply 注册六条路由并经 effect 管理', () => {
+test('apply 注册七条路由并经 effect 管理（含漫剧工坊 drama RPC 面）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-wire-'))
   try {
     const { routes, effects } = wire({ DSH_HOME: dir })
     assert.deepEqual([...routes.keys()].sort(), [
       '/dsh-video-generator/api',
       '/dsh-video-generator/channels',
+      '/dsh-video-generator/drama',
       '/dsh-video-generator/health',
       '/dsh-video-generator/media',
       '/dsh-video-generator/runs',
       '/dsh-video-generator/settings',
     ])
-    assert.equal(effects.length, 6)
+    assert.equal(effects.length, 7)
     assert.equal(routes.get('/dsh-video-generator/runs')!.kind, 'prefix')
     assert.equal(routes.get('/dsh-video-generator/media')!.kind, 'prefix')
+    assert.equal(routes.get('/dsh-video-generator/drama')!.kind, 'exact')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -126,7 +128,7 @@ test('apply 注册三交接工具与 systemPrompt 通告；disposer 回收', () 
     const w = wire({ DSH_HOME: dir })
     assert.deepEqual(
       [...w.registeredTools].map((d) => d.name).sort(),
-      ['vgen_channels', 'vgen_generate', 'vgen_provide', 'vgen_review', 'vgen_script', 'vgen_status', 'vgen_story', 'vgen_storyboard'],
+      ['drama_propose', 'drama_read', 'vgen_channels', 'vgen_generate', 'vgen_provide', 'vgen_review', 'vgen_script', 'vgen_status', 'vgen_story', 'vgen_storyboard'],
     )
     assert.ok(w.registeredTools.every((d) => typeof d.execute === 'function' && d.parameters && d.output?.render))
     assert.deepEqual(
@@ -424,21 +426,15 @@ test('runs prefix：列表免围栏、未知 run 详情 404、非两段路径 40
   }
 })
 
-test('M4: apply 安装预设到 <DSH_HOME>/.agent-presets（跟随 harness home，幂等）', () => {
+test('v2.0.0: 预设退役——apply 不再向 <DSH_HOME>/.agent-presets 安装任何文件（验收 3）', () => {
   const home = mkdtempSync(join(tmpdir(), 'vgen-home-'))
   const prev = process.env['HOME']
   process.env['HOME'] = home
   try {
-    // 真实调用 apply()（wire 装置内部）触发 ensurePresetInstalled；
-    // 预设目标 = DSH_HOME/.agent-presets（禁止写死品牌目录），vault/runs 同步隔离。
     wire({ DSH_HOME: home })
-    const dest = join(home, '.agent-presets', 'dsh-video-generator')
-    assert.ok(existsSync(join(dest, 'preset.yml')), '缺 preset.yml')
-    assert.ok(existsSync(join(dest, 'agent.cordis.yml')), '缺 agent.cordis.yml')
-    // 幂等：再次 apply 不炸、文件仍在
-    wire({ DSH_HOME: home })
-    assert.ok(existsSync(join(dest, 'preset.yml')))
-    // 写死品牌目录回归：不得出现 <DSH_HOME>/.dsh 或 .kcoder 层
+    // 预设安装逻辑已从主流程移除（规格 §9）：宿主不再出现本插件预设目录
+    assert.ok(!existsSync(join(home, '.agent-presets', 'dsh-video-generator')), '预设目录不应再被安装')
+    // 插件主流程不受影响：vault/runs 照常初始化（下次访问时惰性建目录）
     assert.ok(!existsSync(join(home, '.dsh')) && !existsSync(join(home, '.kcoder')), '不得写死品牌目录层')
   } finally {
     if (prev === undefined) delete process.env['HOME']

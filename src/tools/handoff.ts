@@ -1,4 +1,6 @@
-/** LLM 三段交接工具（规格 §5 表）：会话模型产出结构化 JSON → 校验 + 落盘 + run 推进。 */
+/** LLM 三段交接工具（规格 §5 表）：会话模型产出结构化 JSON → 校验 + 落盘 + run 推进。
+ *  漫剧改编任务（§6.4）：vgen_* 三段携带 projectId/adaptationId/workspaceId 时，
+ *  工具把 story/script/storyboard 产物镜像回项目 adaptations/<id>/ 并回填 run-link。 */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -7,10 +9,29 @@ import type { RunStore } from '../store/runs.ts'
 import { validateStory, validateScript, validateStoryboard, HandoffError, type StoryboardShot } from '../schema/handoff.ts'
 import { buildShotPrompt } from '../prompts.ts'
 import { STAGES } from '../stages.ts'
+import { DramaError } from '../store/project.ts'
+import type { DramaHost, ResolvedWorkspace } from '../drama/gateway.ts'
 
 export interface HandoffContext {
   vault: VaultStore
   runs: RunStore
+  /** 漫剧工坊网关（可选：缺省时改编参数直接报 bad-request）。 */
+  drama?: DramaHost
+}
+
+/** 改编联动参数提取：带 adaptationId 就必须带全三件套（workspaceId/projectId）；
+ *  无则 null（普通 run，零行为变化）。 */
+function adaptationRef(ctx: HandoffContext, args: Record<string, unknown>): { ws: ResolvedWorkspace; adaptationId: string; projectId: string } | null {
+  const adaptationId = args['adaptationId']
+  if (adaptationId === undefined || adaptationId === null || adaptationId === '') return null
+  if (typeof adaptationId !== 'string' || !adaptationId || typeof args['projectId'] !== 'string' || !args['projectId']) {
+    throw new HandoffError('bad-request', '改编任务须同时提供 adaptationId 与 projectId（见任务指令）')
+  }
+  if (!ctx.drama) throw new HandoffError('bad-request', '当前宿主未启用漫剧工坊存储，不能携带 adaptationId')
+  // not-found / workspace-unknown 语义集中在这里抛出
+  const ws = ctx.drama.resolve(args['workspaceId'])
+  ws.projects.requireProject(args['projectId'] as string)
+  return { ws, adaptationId, projectId: args['projectId'] as string }
 }
 
 export type ToolResult = { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }
@@ -38,6 +59,7 @@ function wrap(fn: () => unknown): ToolResult {
     return { ok: true, value: fn() }
   } catch (err) {
     if (err instanceof HandoffError) return { ok: false, error: { code: err.code, message: err.message } }
+    if (err instanceof DramaError) return { ok: false, error: { code: err.code, message: err.message } }
     return { ok: false, error: { code: 'internal', message: err instanceof Error ? err.message : String(err) } }
   }
 }
@@ -83,7 +105,13 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
         persist(runs, run.id, 'story', story)
         runs.setStage(run.id, 'story', 'done')
         runs.appendEvent(run.id, 'stage-done', { stage: 'story' })
-        return { runId: run.id, stages: STAGES.slice(0, 1), next: '调用 vgen_script 提交剧本' }
+        // 漫剧改编联动：回填 run-link + 镜像 story（§6.4 / 验收 12）
+        const ref = adaptationRef(ctx, (args ?? {}) as Record<string, unknown>)
+        if (ref) {
+          ref.ws.projects.linkRun(ref.projectId, ref.adaptationId, run.id)
+          ref.ws.projects.mirrorAdaptationArtifact(ref.projectId, ref.adaptationId, 'story', story)
+        }
+        return { runId: run.id, stages: STAGES.slice(0, 1), next: '调用 vgen_script 提交剧本', ...(ref ? { adaptationId: ref.adaptationId, projectId: ref.projectId } : {}) }
       }),
     },
     script: {
@@ -93,6 +121,8 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
         persist(runs, runId, 'script', script)
         runs.setStage(runId, 'script', 'done')
         runs.appendEvent(runId, 'stage-done', { stage: 'script' })
+        const ref = adaptationRef(ctx, (args ?? {}) as Record<string, unknown>)
+        if (ref) ref.ws.projects.mirrorAdaptationArtifact(ref.projectId, ref.adaptationId, 'script', script)
         return { runId, stages: STAGES.slice(0, 2), next: '调用 vgen_storyboard 提交分镜' }
       }),
     },
@@ -118,6 +148,8 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
         persist(runs, runId, 'storyboard', { shots: enriched })
         runs.setStage(runId, 'storyboard', 'done')
         runs.appendEvent(runId, 'stage-done', { stage: 'storyboard' })
+        const ref = adaptationRef(ctx, (args ?? {}) as Record<string, unknown>)
+        if (ref) ref.ws.projects.mirrorAdaptationArtifact(ref.projectId, ref.adaptationId, 'storyboard', { shots: enriched })
         return { runId, stages: STAGES.slice(0, 3), shots: enriched.map((s) => ({ index: s.index, prompt: s.positive })) }
       }),
     },
@@ -158,8 +190,18 @@ export function handoffToolDefs(handoff: HandoffTools): DshToolDefinition[] {
   return [
     {
       name: 'vgen_story',
-      description: '提交结构化故事 JSON，开新 run 并落盘（LLM 三段交接第 1 步）。返回 runId 与阶段列表。',
-      parameters: { type: 'object', properties: { story: STORY_PARAM }, required: ['story'] },
+      description:
+        '提交结构化故事 JSON，开新 run 并落盘（LLM 三段交接第 1 步）。返回 runId 与阶段列表。漫剧改编任务（任务指令含 adaptationId）必须同时携带 workspaceId/projectId/adaptationId，工具会把产物镜像回项目改编任务并记录 run-link。',
+      parameters: {
+        type: 'object',
+        properties: {
+          story: STORY_PARAM,
+          workspaceId: { type: 'string', description: '漫剧改编任务：workspaceId（来自任务指令）' },
+          projectId: { type: 'string', description: '漫剧改编任务：项目 id（proj- 前缀）' },
+          adaptationId: { type: 'string', description: '漫剧改编任务：改编任务 id（adapt- 前缀）' },
+        },
+        required: ['story'],
+      },
       output: { schema: { type: 'object' }, render: jsonRender },
       timeoutMs: 10_000,
       execute: (args) => handoff.story.execute(args as { story: unknown }),
@@ -169,7 +211,13 @@ export function handoffToolDefs(handoff: HandoffTools): DshToolDefinition[] {
       description: '提交剧本（场次/角色引用/对白，引用完整性校验），挂到已有 run（LLM 三段交接第 2 步）。',
       parameters: {
         type: 'object',
-        properties: { runId: RUNID_PARAM, script: { type: 'object', description: '剧本对象：story 字段 + scenes[{id,name,characters[]}]/dialog[{sceneId,characterId,line}]' } },
+        properties: {
+          runId: RUNID_PARAM,
+          script: { type: 'object', description: '剧本对象：story 字段 + scenes[{id,name,characters[]}]/dialog[{sceneId,characterId,line}]' },
+          workspaceId: { type: 'string', description: '漫剧改编任务：workspaceId' },
+          projectId: { type: 'string', description: '漫剧改编任务：项目 id' },
+          adaptationId: { type: 'string', description: '漫剧改编任务：改编任务 id（镜像剧本回项目）' },
+        },
         required: ['runId', 'script'],
       },
       output: { schema: { type: 'object' }, render: jsonRender },
@@ -190,6 +238,9 @@ export function handoffToolDefs(handoff: HandoffTools): DshToolDefinition[] {
               '分镜数组：index 从 1 连续、line 镜头台词、prompt 手写画面描述、characterIds 引用 story 角色 id、sceneId 可选、camera 可选（≤200）、durationSec 2..10、voiceHint 可选',
           },
           style: { type: 'string', description: '可选：本批分镜风格；缺省回退 story.style' },
+          workspaceId: { type: 'string', description: '漫剧改编任务：workspaceId' },
+          projectId: { type: 'string', description: '漫剧改编任务：项目 id' },
+          adaptationId: { type: 'string', description: '漫剧改编任务：改编任务 id（镜像分镜回项目）' },
         },
         required: ['runId', 'shots'],
       },
