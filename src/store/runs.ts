@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { GateMode } from './vault.ts'
+import { harnessHome } from './home.ts'
 
 export type StageState = 'pending' | 'running' | 'done' | 'failed'
 export type RunStatus = 'running' | 'done' | 'failed'
@@ -37,7 +38,8 @@ export interface RunRecord {
 }
 
 export function resolveRunsDir(env: NodeJS.ProcessEnv = process.env): string {
-  const base = env['DSH_HOME'] ? join(env['DSH_HOME']!, '.dsh-video-generator') : join(homedir(), '.dsh-video-generator')
+  const home = harnessHome(env)
+  const base = home !== null ? join(home, '.dsh-video-generator') : join(homedir(), '.dsh-video-generator')
   return join(base, 'runs')
 }
 

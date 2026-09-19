@@ -9,7 +9,7 @@ import type { MachineDeps } from '../pipeline/machine.ts'
 import { fetchPricing, estimateCny, type PricingTable } from '../pricing.ts'
 import { SpendLedger } from '../spend.ts'
 import { providerForModel } from '../registry.ts'
-import { advanceRun, ManualGateError, AskGateRejectedError } from '../pipeline/machine.ts'
+import { advanceRun, ManualGateError, AskGateRejectedError, RunInterruptedError } from '../pipeline/machine.ts'
 import { isStage } from '../stages.ts'
 import { locateFfmpeg } from '../finalcut/render-ffmpeg.ts'
 import type { CloudTtsConfig } from '../finalcut/voice.ts'
@@ -33,6 +33,8 @@ export interface GenerateContext {
   fetchImpl?: typeof fetch
   /** 测试注入：云端 TTS 配置；生产路径按当前通道 models[] 动态选择。 */
   tts?: CloudTtsConfig
+  /** 宿主生命周期信号：插件停用/卸载（HMR）时 abort，在飞生成在检查点停下。 */
+  signal?: AbortSignal
 }
 
 export function configuredCloudTts(channel: ChannelRef, env: NodeJS.ProcessEnv = process.env): CloudTtsConfig | undefined {
@@ -132,6 +134,7 @@ export function buildGenerateTools(ctx: GenerateContext): {
             tts: ctx.tts ?? configuredCloudTts(channel, env),
             concurrency: typeof args['concurrency'] === 'number' ? args['concurrency'] : undefined,
             fetchImpl: ctx.fetchImpl,
+            signal: ctx.signal,
           })
           ledger.totals() // 触碰记账文件，保证 open 语义生效（空读容错）
           return {
@@ -162,6 +165,9 @@ export function buildGenerateTools(ctx: GenerateContext): {
           }
           if (err instanceof AskGateRejectedError) {
             return { ok: false, error: { code: 'gate-approval', message: `${err.message}。请与用户确认该段执行，然后携带 gateApprovals（如 ["master-asset"]）重新调用；或改 gates 为 auto/manual。` } }
+          }
+          if (err instanceof RunInterruptedError) {
+            return { ok: false, error: { code: 'interrupted', message: `${err.message}。run 已置 failed(host-interrupted)；插件重新启用后可对未完成段用 rerunStage 续跑。` } }
           }
           if (err instanceof HandoffError) return { ok: false, error: { code: err.code, message: err.message } }
           return { ok: false, error: { code: 'internal', message: err instanceof Error ? err.message : String(err) } }

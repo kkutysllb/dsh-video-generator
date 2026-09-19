@@ -41,6 +41,19 @@ export interface MachineDeps {
   tts?: CloudTtsConfig
   /** 状态轮询基础间隔（ms），默认 1000。 */
   pollDelayMs?: number
+  /** 宿主生命周期信号：插件停用/卸载（HMR）时 abort，在飞的段执行在下一个
+   *  检查点停下并置 run 为 failed(host-interrupted)，不再继续调用通道 API。 */
+  signal?: AbortSignal
+}
+
+/** 宿主停用中断：段执行在检查点抛出，工具层转 interrupted 信封。 */
+export class RunInterruptedError extends Error {
+  readonly runId: string
+  constructor(runId: string) {
+    super(`run ${runId} 因宿主停用中断（plugin deactivated）`)
+    this.name = 'RunInterruptedError'
+    this.runId = runId
+  }
 }
 
 function selectStageModel(deps: MachineDeps, kind: 'image' | 'video', injected?: string): string {
@@ -111,12 +124,13 @@ function lastEvent(events: RunEvent[], type: string): RunEvent | undefined {
 }
 
 /** 简单并发泵：按 index 顺序发起，至多 limit 个在飞；任一失败即熔断（在飞任务自然完成，不再取新任务）。 */
-async function pump<T>(items: T[], limit: number, worker: (item: T, index: number) => Promise<void>): Promise<void> {
+async function pump<T>(items: T[], limit: number, worker: (item: T, index: number) => Promise<void>, live?: () => void): Promise<void> {
   let next = 0
   let stopped = false
   const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
     for (;;) {
       if (stopped) return
+      live?.() // 宿主停用检查点：在飞任务自然结束，不再取新任务
       const i = next++
       if (i >= items.length) return
       try {
@@ -186,7 +200,29 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
     }
   }
 
+  /** 宿主停用检查点：置当前 running 段 failed + 事件留痕，再抛中断。
+   *  与 dsh-kylin-automation 的 host_interrupted 语义同款；
+   *  interruptMarked 保证并发泵多 runner 同时命中时事件只记一次。 */
+  let interruptMarked = false
+  const ensureLive = (): void => {
+    if (deps.signal?.aborted !== true) return
+    if (!interruptMarked) {
+      interruptMarked = true
+      const live = runs.get(runId)
+      if (live !== null) {
+        for (const [stage, state] of Object.entries(live.stages)) {
+          if (state === 'running') runs.setStage(runId, stage, 'failed')
+        }
+      }
+      runs.setStatus(runId, 'failed')
+      runs.appendEvent(runId, 'run-interrupted', { reason: 'host-deactivated' })
+    }
+    throw new RunInterruptedError(runId)
+  }
+  ensureLive()
+
   const begin = (st: StageId): void => {
+    ensureLive() // 段边界检查点：停用后不再开启新段
     runs.setStage(runId, st, 'running')
     runs.appendEvent(runId, 'stage-start', { stage: st })
   }
@@ -230,7 +266,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           runs.appendEvent(runId, 'spend', { stage: st, model: imageModel, estCny: est, jobId: String(url).slice(0, 80) })
           await saveUrl(fetchImpl, url, job.file)
           urls.push({ key: job.file, url })
-        })
+        }, ensureLive)
         done(st)
       } catch (err) {
         runs.setStage(runId, st, 'failed')
@@ -275,7 +311,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           const file = join(shotsDir, `shot-${String(shot.index).padStart(3, '0')}.png`)
           await saveUrl(fetchImpl, url, file)
           shotImages.push({ index: shot.index, url, file })
-        })
+        }, ensureLive)
         shotImages.sort((a, b) => a.index - b.index)
         result.shotImages = shotImages
         runs.appendEvent(runId, 'shot-urls', { urls: shotImages })
@@ -335,7 +371,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
             throw new Error(`shot ${shot.index}: ${err instanceof Error ? err.message : String(err)}`)
           }
           clipFiles.push(file)
-        })
+        }, ensureLive)
         clipFiles.sort()
         result.clipFiles = clipFiles
         runs.appendEvent(runId, 'clips', { files: clipFiles })

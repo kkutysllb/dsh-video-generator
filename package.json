@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-generator",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "DSH 原生视频生成插件：短视频/短剧/漫剧管线，用户自配 OpenAI 兼容通道（官方/中转皆可）",
   "type": "module",
   "engines": {
@@ -38,6 +38,19 @@
       "platform": "web"
     }
   },
+  "qilin": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
   "files": [
     "lib",
     "release",
@@ -49,5 +62,9 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kkutysllb/dsh-video-generator.git"
+  }
 }
