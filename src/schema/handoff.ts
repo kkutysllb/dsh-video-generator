@@ -38,6 +38,8 @@ export interface DialogLine {
 }
 
 export interface Script extends Story {
+  /** 歌词（可选）：会话模型产出，段落标签体系；供 music.song（P2）与成片字幕。 */
+  lyrics?: string
   scenes: ScriptScene[]
   dialog: DialogLine[]
 }
@@ -201,7 +203,16 @@ export function validateScript(v: unknown): Script {
     if (!charIds.has(characterId)) fail(`script.dialog[${i}].characterId 引用不存在的角色: ${characterId}`)
     return { sceneId, characterId, line: boundedStr(dr['line'], `script.dialog[${i}].line`, MAX.line) }
   })
-  return { ...story, scenes, dialog }
+  // 歌词（可选，P1 §6.2）：会话模型产出，14 段落标签体系；非空字符串上限 20000
+  const lyricsRaw = r['lyrics']
+  let lyrics: string | undefined
+  if (lyricsRaw !== undefined && lyricsRaw !== null && lyricsRaw !== '') {
+    if (typeof lyricsRaw !== 'string') fail('script.lyrics 须为字符串')
+    const trimmed = lyricsRaw.trim()
+    if (trimmed.length > 20000) fail(`script.lyrics 超限：${trimmed.length} > 20000`)
+    lyrics = trimmed
+  }
+  return { ...story, scenes, dialog, ...(lyrics !== undefined ? { lyrics } : {}) }
 }
 
 export function validateStoryboard(v: unknown): Storyboard {

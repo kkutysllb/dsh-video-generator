@@ -13,7 +13,7 @@ import type { Provider } from '../provider.ts'
 import { capabilityFlag, type SlotBinding, type SlotId } from '../store/slots.ts'
 import { buildCharacterSheetPrompt, buildScenePrompt, buildShotPrompt } from '../prompts.ts'
 import { STAGES, type StageId } from '../stages.ts'
-import { retryTransient } from '../poll.ts'
+import { pollUntil, retryTransient } from '../poll.ts'
 import { RelayError } from '../providers/relay-http.ts'
 import { bindingUnavailable, isExplicitModelUnavailable, ModelUnavailableError, requireSlotBinding } from '../model-selection.ts'
 import { providerForSlot, type ChannelRef } from '../providers/protocols.ts'
@@ -47,8 +47,8 @@ export interface MachineDeps {
   /** 宿主生命周期信号：插件停用/卸载（HMR）时 abort，在飞的段执行在下一个
    *  检查点停下并置 run 为 failed(host-interrupted)，不再继续调用通道 API。 */
   signal?: AbortSignal
-  /** 记账回调（submit 成功后落全局账本；工具层注入 SpendLedger.record）。 */
-  recordSpend?: (entry: { channel: string; model: string; kind: 'image' | 'video'; estCny: number | null; jobId: string }) => void
+  /** 记账回调（submit 成功后落全局账本；工具层注入 SpendLedger.recordSafe）。 */
+  recordSpend?: (entry: { channel: string; model: string; kind: 'image' | 'video' | 'music'; estCny: number | null; jobId: string }) => void
 }
 
 /** 宿主停用中断：段执行在检查点抛出，工具层转 interrupted 信封。 */
@@ -160,6 +160,7 @@ function toTimeline(d: TimelineData): Timeline {
   for (const c of d.clips) t.addClip(c.src, c.durationUs, c.volume)
   for (const s of d.subtitles) t.addSubtitle(s.text, s.startUs, s.endUs)
   for (const a of d.audio) t.addAudio(a.src, a.startUs, a.durationUs, a.volume)
+  if (d.music) t.addMusic(d.music.src, d.music.durationUs, d.music.volume)
   return t
 }
 
@@ -410,6 +411,64 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
     }
   }
 
+  if (targetIdx >= STAGES.indexOf('music')) {
+    const st: StageId = 'music'
+    const current = runs.get(runId)!.stages
+    if (current[st] !== 'done') {
+      const bgm = deps.slots['music.bgm']
+      if (!bgm) {
+        // D6：BGM 未绑定 → 跳过留痕，不阻断成片
+        runs.appendEvent(runId, 'music-skip', { reason: '用途槽 music.bgm 未绑定（BGM 关闭）' })
+      } else {
+        const explicitTarget = targetIdx === STAGES.indexOf('music')
+        await ensureGate(st, 'BGM 生成')
+        const script = readJson<{ style?: string }>(runs, runId, 'script')
+        const sb = readJson<{ shots: Array<{ durationSec?: number }> }>(runs, runId, 'storyboard')
+        // 时长请求 = 分镜时长合计（下限 15s）；成片端再做循环补长/裁切归一
+        const estTotalSec = sb.shots.reduce((acc, s) => acc + (s.durationSec ?? 5), 0)
+        const durationSec = Math.max(15, Math.min(300, Math.ceil(estTotalSec)))
+        const channel = deps.channelFor(bgm)
+        const provider = deps.providers.forSlot(bgm, channel, { fetchImpl })
+        const musicDir = join(runs.rootDir, runId, 'music')
+        const outFile = join(musicDir, 'bgm.mp3')
+        try {
+          begin(st)
+          mkdirSync(musicDir, { recursive: true })
+          const est = deps.estimate(bgm)
+          if (!(await deps.confirmer(est, 'music'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
+          const prompt = `Instrumental background music, ${script.style || 'cinematic'}, calm and unobtrusive, seamless loop, no vocals`
+          const { jobId } = await retryTransient(() => provider.submit(st, { prompt, instrumental: true, durationSec }))
+          runs.appendEvent(runId, 'spend', { stage: st, model: bgm.model, estCny: est, jobId: String(jobId).slice(0, 80) })
+          deps.recordSpend?.({ channel: channel.id, model: bgm.model, kind: 'music', estCny: est, jobId: String(jobId).slice(0, 80) })
+          const finalState = await pollUntil(
+            () => provider.status(String(jobId)),
+            { isFinal: (s) => s.state === 'done' || s.state === 'failed', delayMs: deps.pollDelayMs ?? 1000, maxPollMs: 600000 },
+          )
+          if (finalState.state === 'failed') throw new Error(`音乐生成失败: ${finalState.error ?? '?'}`)
+          const f = await provider.fetch(String(jobId))
+          const headers = (f.meta as { headers?: Record<string, string> } | undefined)?.headers
+          const audioB64 = (f.meta as { audioBase64?: string } | undefined)?.audioBase64
+          if (audioB64) {
+            writeFileSync(outFile, Buffer.from(audioB64, 'base64'), { mode: 0o600 })
+          } else {
+            const url = f.outputs[0]
+            if (!url) throw new Error('音乐任务完成但无输出')
+            await saveUrl(fetchImpl, url, outFile, headers)
+          }
+          const durSec = deps.ffmpeg ? await probeDurationSec(outFile, deps.ffmpeg) : null
+          runs.appendEvent(runId, 'music-done', { file: 'music/bgm.mp3', durationSec: durSec, requestedSec: durationSec })
+          done(st)
+        } catch (err) {
+          runs.setStage(runId, st, 'failed')
+          const msg = err instanceof Error ? err.message : String(err)
+          runs.appendEvent(runId, 'music-failed', { error: msg.slice(0, 300) })
+          if (explicitTarget) throw wrapBindingError(bgm, err)
+          // D6：路径过段（target=final）时音乐失败不阻断 final-cut，成片仍出
+        }
+      }
+    }
+  }
+
   if (targetIdx >= STAGES.indexOf('final-cut')) {
     const st: StageId = 'final-cut'
     const current = runs.get(runId)!.stages
@@ -482,6 +541,12 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           })
         }
         const data = buildTimeline({ canvas: { width: 1080, height: 1920, fps: 24 }, shots: timelineShots })
+        // BGM 混入（D6 默认开）：存在 music/bgm.mp3 即垫底；渲染端循环补长/裁切 + ducking + 淡入淡出
+        const bgmFile = join(runs.rootDir, runId, 'music', 'bgm.mp3')
+        if (existsSync(bgmFile)) {
+          data.addMusic(bgmFile, undefined, 0.22)
+          runs.appendEvent(runId, 'bgm-mix', { file: 'music/bgm.mp3', volume: 0.22 })
+        }
         const timeline = toTimeline(data)
         const finalPath = join(runs.rootDir, runId, 'final.mp4')
         const r = await renderTimeline(timeline, finalPath, { subtitles: true, ffmpeg: deps.ffmpeg })

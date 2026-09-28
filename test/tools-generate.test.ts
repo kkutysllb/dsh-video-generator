@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildGenerateTools, configuredCloudTts } from '../src/tools/generate.ts'
+import { buildGenerateTools, configuredCloudTts, generateToolDefs } from '../src/tools/generate.ts'
 import type { MachineDeps } from '../src/pipeline/machine.ts'
 import { VaultStore } from '../src/store/vault.ts'
 import type { SlotBinding, SlotId } from '../src/store/slots.ts'
@@ -352,6 +352,34 @@ test('vgen_generate：阈值 0 且估价未知仍 confirm-required（unknown 一
     assert.equal(r.ok, false)
     assert.equal(r.error?.code, 'confirm-required')
     assert.equal(s.runs.get(s.run.id)!.stages['master-asset'], 'failed')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+/* ── P1：target=music ── */
+
+test('vgen_generate defs：target 枚举含 music', () => {
+  const s = setup()
+  try {
+    const defs = generateToolDefs(s.tools)
+    const def = defs.find((d) => d.name === 'vgen_generate')!
+    const enumVals = (def.parameters as { properties: { target: { enum: string[] } } }).properties.target.enum
+    assert.ok(enumVals.includes('music'))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('vgen_generate target=music：bgm 未绑定 → ok + music-skip 事件（D6 不阻断）', async () => {
+  const s = setup({ slots: () => ({}) })
+  try {
+    // 前序媒体段全部 done：本用例只看 music 未绑定跳过（D6）
+    for (const st of ['master-asset', 'shot-assets', 'video'] as const) s.runs.setStage(s.run.id, st, 'done')
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'music' }) as { ok: boolean; value: { stages: Record<string, string> } }
+    assert.equal(r.ok, true)
+    assert.notEqual(r.value.stages['music'], 'done')
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-skip'))
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }

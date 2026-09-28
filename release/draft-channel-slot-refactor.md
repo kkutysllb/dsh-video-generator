@@ -67,6 +67,24 @@
 | 静态断言 | 适配器与模板数据无 provider 条件分支；bundle 旧 picker 符号 `doesNotMatch` |
 | 真机 | 待办：最小 profile boot + 真实通道槽位测试各槽一次 + 迁移真机验证（发版前执行） |
 
+## P1 —— 音乐段（同批草案，未发布）
+
+### 新增
+
+- **`music` 段**（STAGES 第八段，video 之后 final-cut 之前）：绑定 `music.bgm` 即自动生成 BGM（`music/bgm.mp3` + `music-done` 事件）；`vgen_generate` target 增 `'music'`；rerunStage 支持 `music`。
+- **BGM 默认策略（D6）**：未绑定槽 → `music-skip` 事件跳过，不阻断成片；过段失败（target=final 路径）吞错误继续出片，显式 target=music 才上抛。
+- **BGM 混音**：渲染端 `stream_loop` 循环补长 + `atrim` 裁切成片总长 + 首尾 0.5s `afade` + **`sidechaincompress` ducking**（人声总线作侧链压音乐，默认垫底音量 0.22）；产物页新增 BGM 音频播放器。
+- **歌词资产**：`vgen_script` 可选 `lyrics` 字段（≤20000 字符），落盘 `runs/<id>/lyrics.json`（music.song/MV 消费，P2）。
+- **工具取消信号转发（B1）**：`vgen_generate` 的 `execute` 透传 `exec.signal`，与宿主停用信号 `AbortSignal.any` 组合——工具超时/取消在段边界与并发泵检查点停下，不再后台空烧。
+
+### 变更
+
+- 诊断卡「TTS 能力」提示文案改为用途槽口径。
+
+### 测试
+
+- 279 → **292**（music 段 4 + BGM 混音 2 + lyrics 2 + artifacts/timeline/tools-generate/client 各 1）；`demo:mock` 零 key 全链路（含 music-skip 路径）EXIT=0。
+
 ## 发布链
 
 （**全部冻结**，见顶部状态声明）

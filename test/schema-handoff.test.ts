@@ -57,3 +57,17 @@ test('validateStoryboard：畸形 characters（缺 name）报 HandoffError；cha
   )
   assert.throws(() => validateStoryboard({ shots: [SHOT1] }), HandoffError)
 })
+
+/* ── P1：script.lyrics（歌词走会话模型，规格 §6.2）────────── */
+
+test('validateScript：lyrics 可选透传（段落标签文本）', () => {
+  const r = validateScript({ ...SCRIPT, lyrics: '[Verse]\n夏日微风吹过海面\n[Chorus]\n这一刻只有你和我' })
+  assert.equal(r.lyrics?.includes('[Chorus]'), true)
+})
+
+test('validateScript：lyrics 超限（>20000）与非字符串拒收', () => {
+  assert.throws(() => validateScript({ ...SCRIPT, lyrics: 'x'.repeat(20001) }), /lyrics/)
+  assert.throws(() => validateScript({ ...SCRIPT, lyrics: 42 }), /lyrics.*字符串|字符串/)
+  const r = validateScript({ ...SCRIPT })
+  assert.equal(r.lyrics, undefined, '缺省不注入键')
+})

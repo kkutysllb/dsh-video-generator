@@ -475,3 +475,11 @@ test('bundle：0.1.7 会话桥 v4 契约哨兵——关键串齐备、旧面只�
   // 0.1.7 已删字段：不再把 getSnapshot().current 当唯一判据
   assert.doesNotMatch(code, /getSnapshot\(\)\.current/)
 })
+
+test('bundle：music 段接线——阶段 chip / gate 下拉 / BGM 产物播放器', () => {
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  assert.match(code, /var STAGES = \["story", "script", "storyboard", "master-asset", "shot-assets", "video", "music", "final-cut"\]/)
+  assert.match(code, /var MEDIA_STAGES = \["master-asset", "shot-assets", "video", "music", "final-cut"\]/)
+  assert.match(code, /artifacts\.music \|\| \[\]/)
+  assert.match(code, /React\.createElement\("audio"/)
+})

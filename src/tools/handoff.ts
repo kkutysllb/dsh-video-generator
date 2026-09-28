@@ -119,6 +119,13 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
         const runId = requireRun(runs, args?.['runId'])
         const script = validateScript(args?.['script'])
         persist(runs, runId, 'script', script)
+        // 歌词资产（规格 §6.2）：会话模型随剧本产出，music.song（P2）与 MV 流程消费
+        if (typeof (script as { lyrics?: unknown }).lyrics === 'string') {
+          const lyricsFile = join(runDir(runs, runId), 'lyrics.json')
+          const tmp = `${lyricsFile}.tmp-${process.pid}`
+          writeFileSync(tmp, JSON.stringify({ lyrics: (script as { lyrics: string }).lyrics }, null, 2), { mode: 0o600 })
+          renameSync(tmp, lyricsFile)
+        }
         runs.setStage(runId, 'script', 'done')
         runs.appendEvent(runId, 'stage-done', { stage: 'script' })
         const ref = adaptationRef(ctx, (args ?? {}) as Record<string, unknown>)
@@ -208,12 +215,12 @@ export function handoffToolDefs(handoff: HandoffTools): DshToolDefinition[] {
     },
     {
       name: 'vgen_script',
-      description: '提交剧本（场次/角色引用/对白，引用完整性校验），挂到已有 run（LLM 三段交接第 2 步）。',
+      description: '提交剧本（场次/角色引用/对白，引用完整性校验；可选 lyrics 歌词文本），挂到已有 run（LLM 三段交接第 2 步）。',
       parameters: {
         type: 'object',
         properties: {
           runId: RUNID_PARAM,
-          script: { type: 'object', description: '剧本对象：story 字段 + scenes[{id,name,characters[]}]/dialog[{sceneId,characterId,line}]' },
+          script: { type: 'object', description: '剧本对象：story 字段 + scenes[{id,name,characters[]}]/dialog[{sceneId,characterId,line}]/可选 lyrics 歌词' },
           workspaceId: { type: 'string', description: '漫剧改编任务：workspaceId' },
           projectId: { type: 'string', description: '漫剧改编任务：项目 id' },
           adaptationId: { type: 'string', description: '漫剧改编任务：改编任务 id（镜像剧本回项目）' },

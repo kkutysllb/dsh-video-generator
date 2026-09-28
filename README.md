@@ -128,7 +128,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 | `vgen_story` | 提交故事 JSON 开新 run（title/logline/style/characters/chapters） |
 | `vgen_script` | 提交剧本 JSON（scenes/dialog，引用完整性校验） |
 | `vgen_storyboard` | 提交分镜数组，自动注入四层提示词（风格/运镜/角色锚/参考图） |
-| `vgen_generate` | 推进 `assets`/`video`/`final` 段（模型来自用途槽绑定）；`confirm`/`gates`/`gateApprovals`/`rerunStage` |
+| `vgen_generate` | 推进 `assets`/`video`/`music`/`final` 段（模型来自用途槽绑定；music 生成 BGM）；`confirm`/`gates`/`gateApprovals`/`rerunStage` |
 | `vgen_status` | 进度 + gates + reviews + 最近事件 |
 | `vgen_review` | 质量闭环：不带 `score` 抽成片 25/50/75% 三帧；带 `score` 1-5 评分，≤2 自动追加负面词重拍（每镜 ≤2 次，重拍花费同 confirm 语义） |
 | `vgen_provide` | manual gate 产物注入：master-asset（char-*/scene-*）/ shot-assets / video（全镜覆盖、时长 ≥0.5s）/ final-cut（.mp4 注入即 done） |
@@ -143,7 +143,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 通道层按**用途槽**组织：每个用途（`image.master` 主图 / `image.shot` 逐镜图 / `video` 视频 / `tts` 配音 / `music.bgm` 背景乐 / `music.song` MV 主曲）**恰好绑定一个模型**——选通道、填模型名、保存后点「测试」做一次真实小额验证。不做模型枚举导入，不支持多模型轮询兜底；未绑定的用途在运行时返回 `model-unavailable`（含槽位名与指引）。
 
 - **通道**：`Base URL + API Key` 凭证层，可建多个；「测试」= 连通性/鉴权/模型枚举自检，结论留痕（不导入）。
-- **用途槽**：模型名手填；能力位按槽声明（如 video 槽勾 `imageToVideo`/`textToVideo`——未勾 t2v 且无参考图时明确失败，不找替代模型）；`image.shot` 未绑定时回落 `image.master`。音乐槽走**通用适配器**（声明式端点映射，零服务商绑定），可套用按协议形态预填的内置模板或另存自己的模板。
+- **用途槽**：模型名手填；能力位按槽声明（如 video 槽勾 `imageToVideo`/`textToVideo`——未勾 t2v 且无参考图时明确失败，不找替代模型）；`image.shot` 未绑定时回落 `image.master`。音乐槽走**通用适配器**（声明式端点映射，零服务商绑定），可套用按协议形态预填的内置模板或另存自己的模板。`music.bgm` 绑定后自动为成片生成垫底 BGM（未绑定自动跳过不阻断）。
 - **预算与 gate**：单笔确认阈值（unknown 价一律确认）、媒体段 gate 缺省。
 - **升级迁移**：v2 及更早的 `vault.json`（通道 `models[]` + 默认通道）在首次加载时一次性迁移为槽位绑定，原文件备份为 `vault.json.v1.bak-<时间戳>`；`models[]` 中首个 image/video/tts 分别迁移到对应槽位（image 两槽同源），music 槽留空待配置。回滚：用备份覆盖 `vault.json` 并装回旧版插件。
 
@@ -167,7 +167,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 
 - 手动提供的 shot 参考图无公网 URL → video 段自动 i2v 不可用（`vgen_provide` 响应内警示；评审重拍拒绝并给出 `rerunStage` 指引）。
 - 文生视频降级：video 槽勾选 `textToVideo` 能力位后，无参考图时自动走 t2v；未勾选则明确失败（不再尝试替代模型——用途槽范式下单槽单模型）。
-- 音乐槽（BGM/MV）配置与真实小额测试 v3 已可用；`music` 生成段与成片混音（循环/ducking）在 P1 接线，MV 先曲后镜在 P2。
+- 音乐：BGM 已全链路（`music` 段生成 + 成片混音：循环补长/裁切、人声 ducking、首尾淡入淡出，默认开启、未绑定自动跳过）；`music.song` 与 MV 先曲后镜在 P2。
 - kling 上游饱和，`pin-kling-contract.ts` 真机钉契约挂起；Windows SAPI 配音未真机验证（无 Windows 机器）；`openai-video` 通用族契约（/v1/videos）按 Sora 风格实现，真机待钉。
 - happyhorse 等免费档模型带平台水印 → 仅文档警示 + 设置页备注。
 

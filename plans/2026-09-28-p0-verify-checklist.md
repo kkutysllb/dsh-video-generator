@@ -1,5 +1,7 @@
 # P0 真机验证清单（dev 环境：~/.kcoder-dev，不碰 ~/.kcoder）
 
+> **P1 已同环境接线（2026-09-28 晚）**：`music` 段 + BGM 混音（循环/ducking/淡入淡出）+ `vgen_script.lyrics` + `vgen_generate` 取消信号转发；快照已重装 p0web 并重启（health ✓，devch 通道保留）。GUI 复验项见 D 节。
+
 > 日期：2026-09-28 · 分支 `feat/channel-slot-refactor` @ 9b018e8 + 白屏修复
 > 实例：`DSH_HOME=~/.kcoder-dev dsh --profile p0web` → http://127.0.0.1:3080（快照安装 2.0.2.tgz，非 symlink）
 > 运行数据根：`~/.kcoder-dev/.dsh-video-generator/`（与生产完全隔离，已由设置页「产物根目录」核实）
@@ -39,3 +41,10 @@ cd /Users/libing/kk_Projects/dsh-video-generator && npm pack \
 ```
 
 > 注意：`~/.kcoder/profiles/web` 与 `~/.kcoder-dev/profiles/web` 都是指向本仓的 symlink（生产实时生效）；p0web/p0headless 是快照安装。**验证一律用 p0web/p0headless，不要用 web profile。**
+
+## D. P1 GUI 复验（实例已重启装载）
+
+- [ ] run 详情页：阶段 chip 出现 `music`；BGM 产物组（audio 播放器）在有 `music/bgm.mp3` 的 run 上显示。
+- [ ] 预算与 gate：`music` 出现在 gate 缺省下拉（MEDIA_STAGES）。
+- [ ] 端到端 BGM：绑定 music.bgm（真实音乐端点）→ 对 demo 造的 run 跑 `vgen_generate target=final` → 成片含垫底 BGM、人声起时音乐被压低。
+- [ ] 未绑定路径：解除绑定再跑 → `music-skip` 事件、成片正常。

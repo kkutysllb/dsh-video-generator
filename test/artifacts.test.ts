@@ -42,3 +42,18 @@ test('collectArtifacts 空 run 目录全空不抛', () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('collectArtifacts：music 组（P1 BGM 产物）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vgen-art3-'))
+  try {
+    const runs = RunStore.open({ rootDir: root })
+    const run = runs.create('music 产物')
+    const dir = join(runs.rootDir, run.id)
+    mkdirSync(join(dir, 'music'), { recursive: true })
+    writeFileSync(join(dir, 'music', 'bgm.mp3'), 'audio-bytes')
+    const a = collectArtifacts(runs, run.id)
+    assert.deepEqual(a.music, [{ name: 'bgm.mp3', rel: 'music/bgm.mp3', size: 11 }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

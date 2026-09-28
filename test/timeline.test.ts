@@ -40,3 +40,12 @@ test('formatSrtTime：时/分/秒/毫秒补零', () => {
   assert.equal(formatSrtTime(3_500_000), '00:00:03,500')
   assert.equal(formatSrtTime(3_723_500_000), '01:02:03,500')
 })
+
+test('P1：Timeline.addMusic——BGM 轨（至多一条，缺省 durationUs 由渲染端归一）', () => {
+  const t = new Timeline({ width: 1080, height: 1920, fps: 24 })
+  t.addClip('/a.mp4', 5_000_000)
+  t.addMusic('/bgm.mp3', undefined, 0.22)
+  assert.deepEqual(t.music, { src: '/bgm.mp3', volume: 0.22 })
+  t.addMusic('/bgm2.mp3', 4_000_000)
+  assert.deepEqual(t.music, { src: '/bgm2.mp3', durationUs: 4_000_000 }, '再次 addMusic 覆盖（单轨语义）')
+})

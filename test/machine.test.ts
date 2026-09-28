@@ -409,3 +409,109 @@ test('recordSpend 回调：每次 submit 成功落一条（image/video 均含）
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
+
+/* ── P1：music 段（BGM）────────────────────────────── */
+
+function fakeMusicProvider(opts: { fail?: boolean } = {}, specs: Array<Record<string, unknown>> = []) {
+  return {
+    id: 'fake-music', capabilities: { tts: true, qualityTier: 5 },
+    quote: async () => ({ qualityTier: 5, costEstimate: 0.3, currency: 'CNY' }),
+    submit: async (_s: string, spec: Record<string, unknown>) => {
+      specs.push({ ...spec })
+      if (opts.fail) throw new Error('music upstream error')
+      return { jobId: 'mus-1' }
+    },
+    status: async () => ({ state: 'done' as const, progress: 100 }),
+    fetch: async () => ({ outputs: ['https://oss.example/bgm.mp3'] }),
+    health: async () => ({ ok: true }),
+  }
+}
+
+test('P1 music 段：绑定 bgm 槽 → music/bgm.mp3 落盘 + music-done + spend(kind=music)', async () => {
+  const s = setup()
+  try {
+    const musicSpecs: Array<Record<string, unknown>> = []
+    const spend: Array<{ kind: string; model: string }> = []
+    const providers = {
+      forSlot: (b: SlotBinding) => b.slot === 'music.bgm' ? fakeMusicProvider({}, musicSpecs) : fakeImageProvider(`https://img.example/${b.slot}.png`),
+    }
+    const r = await advanceRun({
+      ...BASE, slots: slots({ 'music.bgm': slot('music.bgm', 'bgm-model') }),
+      runs: s.runs, runId: s.run.id, target: 'music', providers,
+      confirmer: async () => true, ffmpeg: null, pollDelayMs: 1,
+      recordSpend: (e: { kind: string; model: string }) => spend.push({ kind: e.kind, model: e.model }),
+    })
+    assert.equal(r.stages['music'], 'done')
+    assert.ok(existsSync(join(s.rd, 'music', 'bgm.mp3')))
+    assert.ok(String(musicSpecs[0]!['prompt']).includes('Instrumental background music'))
+    assert.equal(musicSpecs[0]!['instrumental'], true)
+    assert.ok(Number(musicSpecs[0]!['durationSec']) >= 15, '时长请求 = 分镜合计（下限 15s）')
+    const ev = s.runs.get(s.run.id)!.events.find((e) => e.type === 'music-done')
+    assert.equal((ev?.detail as { file?: string } | undefined)?.file, 'music/bgm.mp3')
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'spend' && e.detail?.['stage'] === 'music'))
+    assert.ok(spend.some((e) => e.kind === 'music' && e.model === 'bgm-model'), 'music 提交落账（target=music 含前序 image 段，不精确全等）')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('P1 music 段：bgm 未绑定 → music-skip 留痕不阻断（D6）', async () => {
+  const s = setup()
+  try {
+    const r = await advanceRun({
+      ...BASE, runs: s.runs, runId: s.run.id, target: 'music',
+      providers: { forSlot: () => fakeImageProvider('https://img.example/x.png') },
+      confirmer: async () => true, ffmpeg: null,
+    })
+    assert.notEqual(r.stages['music'], 'done')
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-skip'))
+    assert.ok(!s.runs.get(s.run.id)!.events.some((e) => e.type === 'spend' && e.detail?.['stage'] === 'music'), '跳过路径零花费')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('P1 music 段：显式 target=music 失败 → rethrow + 段 failed', async () => {
+  const s = setup()
+  try {
+    const providers = {
+      forSlot: (b: SlotBinding) => b.slot === 'music.bgm' ? fakeMusicProvider({ fail: true }) : fakeImageProvider('https://img.example/x.png'),
+    }
+    await assert.rejects(
+      advanceRun({
+        ...BASE, slots: slots({ 'music.bgm': slot('music.bgm', 'bgm-model') }),
+        runs: s.runs, runId: s.run.id, target: 'music', providers,
+        confirmer: async () => true, ffmpeg: null,
+      }),
+      /music upstream error/,
+    )
+    assert.equal(s.runs.get(s.run.id)!.stages['music'], 'failed')
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-failed'))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('P1 music 段：过段失败不阻断 final-cut（D6——错误被吞，成片链继续走到自己的报错）', async () => {
+  const s = setup()
+  try {
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    s.runs.setStage(s.run.id, 'shot-assets', 'done')
+    s.runs.setStage(s.run.id, 'video', 'done')
+    const providers = {
+      forSlot: (b: SlotBinding) => b.slot === 'music.bgm' ? fakeMusicProvider({ fail: true }) : fakeImageProvider('https://img.example/x.png'),
+    }
+    await assert.rejects(
+      advanceRun({
+        ...BASE, slots: slots({ 'music.bgm': slot('music.bgm', 'bgm-model') }),
+        runs: s.runs, runId: s.run.id, target: 'final-cut', providers,
+        confirmer: async () => true, ffmpeg: null,
+      }),
+      /未找到 ffmpeg/, 'final-cut 自己的报错（而非 music 错误）——音乐失败已被吞',
+    )
+    assert.equal(s.runs.get(s.run.id)!.stages['music'], 'failed')
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-failed'))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})

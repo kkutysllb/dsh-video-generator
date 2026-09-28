@@ -54,7 +54,7 @@ export function configuredCloudTts(binding: SlotBinding, channel: ChannelRef, en
 
 export interface GenerateArgs {
   runId: string
-  target: 'assets' | 'video' | 'final'
+  target: 'assets' | 'video' | 'music' | 'final'
   confirm?: boolean
   concurrency?: number
   /** 每段 gate 模式覆盖（持久化进 run.json；优先级 = vault 缺省 < run.json < 本参数）。 */
@@ -68,18 +68,19 @@ export interface GenerateArgs {
 function mapTarget(target: string): MachineDeps['target'] {
   if (target === 'assets') return 'shot-assets'
   if (target === 'video') return 'video'
+  if (target === 'music') return 'music'
   return 'final-cut'
 }
 
 export function buildGenerateTools(ctx: GenerateContext): {
-  generate: { execute: (args: GenerateArgs) => Promise<ToolResult> }
+  generate: { execute: (args: GenerateArgs, callSignal?: AbortSignal) => Promise<ToolResult> }
   status: { execute: (args: { runId: string }) => Promise<ToolResult> }
 } {
   const env = ctx.env ?? process.env
   const ledger = SpendLedger.open(env)
   return {
     generate: {
-      execute: async (args) => {
+      execute: async (args, callSignal) => {
         let denied = 0
         try {
           const runId = String(args['runId'] ?? '')
@@ -96,7 +97,7 @@ export function buildGenerateTools(ctx: GenerateContext): {
             }
             ctx.runs.setGates(runId, argGates)
           }
-          const MEDIA_STAGES = ['master-asset', 'shot-assets', 'video', 'final-cut']
+          const MEDIA_STAGES = ['master-asset', 'shot-assets', 'video', 'music', 'final-cut']
           if (args['rerunStage'] !== undefined) {
             const rs = String(args['rerunStage'])
             if (!MEDIA_STAGES.includes(rs)) return { ok: false, error: { code: 'bad-request', message: `rerunStage 须为媒体段（${MEDIA_STAGES.join('|')}）: ${rs}` } }
@@ -158,7 +159,10 @@ export function buildGenerateTools(ctx: GenerateContext): {
             tts: resolveCloudTts(ctx, slots, channelOf, env),
             concurrency: typeof args['concurrency'] === 'number' ? args['concurrency'] : undefined,
             fetchImpl: ctx.fetchImpl,
-            signal: ctx.signal,
+            // 取消信号组合：宿主停用（lifecycle）+ 工具调用截止（exec.signal，B1）——任一触发即停
+            signal: ctx.signal && callSignal
+              ? AbortSignal.any([ctx.signal, callSignal])
+              : (ctx.signal ?? callSignal),
             recordSpend: (entry) => ledger.recordSafe(entry),
           })
           return {
@@ -244,13 +248,13 @@ export function generateToolDefs(
     {
       name: 'vgen_generate',
       description:
-        '推进 run 的非 LLM 段：target=assets 生成角色三视图/场景主图/逐镜参考图；target=video 逐镜视频；target=final 配音并渲染成片 mp4+SRT。' +
+        '推进 run 的非 LLM 段：target=assets 生成角色三视图/场景主图/逐镜参考图；target=video 逐镜视频；target=music 生成 BGM（用途槽 music.bgm 未绑定时跳过留痕）；target=final 配音+混音渲染成片 mp4+SRT。' +
         '模型来自设置页「用途槽」绑定。首次调用不带 confirm；若返回 confirm-required，先向用户转述成本，再携带 confirm:true 重新调用。',
       parameters: {
         type: 'object',
         properties: {
           runId: { type: 'string', description: 'run id（vgen_story 返回）' },
-          target: { type: 'string', enum: ['assets', 'video', 'final'], description: '推进目标段（含其前序段）' },
+          target: { type: 'string', enum: ['assets', 'video', 'music', 'final'], description: '推进目标段（含其前序段）' },
           confirm: { type: 'boolean', description: '成本确认；仅在向用户转述成本后置 true' },
           concurrency: { type: 'number', description: '并发数，默认 2' },
           gates: { type: 'object', description: '可选：每段 gate 模式 {段名: "auto"|"ask"|"manual"}，持久化进 run.json' },
@@ -261,7 +265,9 @@ export function generateToolDefs(
       },
       output: { schema: { type: 'object' }, render: jsonRender },
       timeoutMs: 600000,
-      execute: (args: unknown) => tools.generate.execute(args as GenerateArgs),
+      // exec.signal 透传（0.1.7 契约）：截止触发 → 生成在段边界/并发泵检查点停下
+      execute: (args: unknown, exec?: { signal?: AbortSignal }) =>
+        tools.generate.execute(args as GenerateArgs, exec?.signal),
     },
     {
       name: 'vgen_status',
