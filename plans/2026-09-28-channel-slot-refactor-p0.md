@@ -294,21 +294,39 @@ test/picker-assemble.test.ts
 
 ---
 
-## 验收
+## 验收（P0 执行结果，2026-09-28）
 
-- [ ] Task 0：2.0.2 已发布、镜像 `sync:check` 零差异、dev 实例装机实测通过
-- [ ] 验收 1：6 槽可配置，结构层无法表达第二候选
-- [ ] 验收 2：未绑定槽 → `model-unavailable`，无 `confirm-required`、无 `spend`
-- [ ] 验收 3：每槽「测试」真实小额调用并写 `verifiedAt/verifyNote`
-- [ ] 验收 4：源码与模板数据无 provider 条件分支（静态断言）
-- [ ] 验收 5：模板可套用/另存/删除，内置模板无凭证
-- [ ] 验收 6：v1 迁移正确、备份存在、幂等、可回滚
-- [ ] 验收 7：破坏性变更入 release note 与 README，版本 3.0.0
-- [ ] 验收 12：`npm run typecheck` + `npm test` 全绿
-- [ ] 验收 13：bundle 哨兵断言旧 picker 符号不存在
-- [ ] 验收 14：阈值生效；`vgen_channels spend` totals > 0
+- [x] Task 0：2.0.2 已提交/打 tag/推送 origin、镜像 `sync:check` 零差异（npm publish 与 dev 实例装机实测留维护者人工触发）
+- [x] 验收 1：6 槽可配置，`slots` 类型层无法表达第二候选（test/slots.test.ts + test/vault.test.ts）
+- [x] 验收 2：未绑定槽 → `model-unavailable` 含槽位名指引，零 `confirm-required`、零 `spend`（test/tools-generate.test.ts）
+- [x] 验收 3：每槽「测试」真实小额调用并写 `verifiedAt/verifyNote`（成败均留痕；test/routes.test.ts）
+- [x] 验收 4：protocols.ts 与 music-templates.ts 静态断言无 provider 条件分支（test/protocols.test.ts）
+- [x] 验收 5：模板可套用/另存/删除，内置模板无凭证零漂移（test/music-mapping.test.ts）
+- [x] 验收 6：v1 迁移正确（含 kling/t2v 启发式）、备份字节一致 0600、幂等、可回滚（test/migrate-vault.test.ts）
+- [x] 验收 7：release/v3.0.0.md + README 迁移章节 + 版本 3.0.0（PLUGIN_VERSION 同步）
+- [x] 验收 12：`npm run typecheck` 0 错误；`npm test` 279/279 全绿
+- [x] 验收 13：bundle 哨兵断言旧 picker 符号（PickerPanel/assemblePickerRowsPublic/inferKindByName/adoptModels/setDefault）不存在
+- [x] 验收 14：阈值生效（unknown 一律确认、超阈值确认）；`vgen_channels spend` 接线（recordSafe，失败不阻断）
 - [ ] 验收 8–11（BGM/MV/本地分析）：**归 P1/P2**，本计划不宣称达成
+- [ ] 真机：最小 profile boot + 真实通道逐槽「测试」+ 迁移真机验证（发版前执行）
 
-## 自审
+## 自审（P0 执行实录）
 
-> 执行完成后填写：实际改动与计划的偏离、未完成项、残留风险、下一步（P1 音乐段）输入。
+**与计划的偏离**
+
+1. `src/registry.ts` 整体删除（计划写"修改"）——`providerForSlot` 落在 `src/providers/protocols.ts`，registry 无存留价值。
+2. **内置音乐模板不落 vault**：vault 只存 user 模板；builtin 随插件数据（`src/providers/music-templates.ts`）提供，随版本刷新（规格 §2.1 的 vault 内 builtin 字段按此口径落地）。
+3. **demo/运维脚本接入 `scripts/env-slots.ts`**（超出计划文件清单）：typecheck 强制触及脚本，顺势修复审计 A1/A2——`demo:mock` 恢复零 key 全链路（EXIT=0 实测），demo-drama/resume-video/fc-only 经 `VGEN_IMAGE_MODEL/VGEN_VIDEO_MODEL/VGEN_TTS_MODEL` 合成槽位。
+4. **执行中发现并修复一处自引入回归**：generate.ts 重写时丢了 `gates: effectiveGates` 与 `ask` 接线（manual/ask gate 静默失效）——由测试子代理以"现状钉住"哨兵捕获，已修复并把哨兵改回契约断言（manual-gate / gate-approval 信封 + gateApprovals 放行）。
+5. 顺带修复超出 §9 三项：DashScope 提交补 `X-DashScope-Async: enable` 头（对齐附录 B.4）；记账改 `recordSafe`（IO 故障不阻断生成）；`openai-video` 通用族按 Sora 风格实现（真机待钉，README 已登记）。
+
+**测试面**：279 用例（较 2.0.2 的 257 净增 22）：新增 slots/migrate-vault/protocols/music-mapping/generic-music 五个文件（28 例）+ machine 扩至 13 例（t2v/能力位/记账回调）+ vault 20 / channels 9 / routes 24 / tools-generate 15 重写；退役 model-catalog/picker/model-selection/registry 四个旧测试文件。
+
+**残留风险 / 待办**
+
+- `openai-video`（/v1/videos）与 generic-music 的真实上游契约未经真机钉（附录式记录待补）。
+- 数字估价 `est ≤ threshold` 放行分支在工具层无法离线测（估价唯一来源是按通道网络拉价目）——逻辑在 `confirmSpend` 纯函数单测覆盖。
+- provider id 前缀历史不一致（`dashscope-relay:`/`kling-compat:` vs 族名前缀）——仅展示层口径，无消费方。
+- vault `sanitize()` 对 gateDefaults 值不做模式校验（写入侧已校验）——沿用旧行为。
+- P1 输入：`music` 段接线（stages/generate target/probe-slot 的 music 分支已就绪）、BGM 混音（aloop/afade/sidechaincompress 本机已验证存在）、歌词经 `vgen_script.lyrics`；P2：MV 先曲后镜 + 本地 PCM 网格分析。
+- 发版：npm publish / dev 实例装机实测 / 分支合并由维护者执行（Task 0 的 2.0.2 已上 origin + 镜像）。

@@ -128,28 +128,31 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 | `vgen_story` | 提交故事 JSON 开新 run（title/logline/style/characters/chapters） |
 | `vgen_script` | 提交剧本 JSON（scenes/dialog，引用完整性校验） |
 | `vgen_storyboard` | 提交分镜数组，自动注入四层提示词（风格/运镜/角色锚/参考图） |
-| `vgen_generate` | 推进 `assets`/`video`/`final` 段；`confirm`/`gates`/`gateApprovals`/`rerunStage` |
+| `vgen_generate` | 推进 `assets`/`video`/`final` 段（模型来自用途槽绑定）；`confirm`/`gates`/`gateApprovals`/`rerunStage` |
 | `vgen_status` | 进度 + gates + reviews + 最近事件 |
 | `vgen_review` | 质量闭环：不带 `score` 抽成片 25/50/75% 三帧；带 `score` 1-5 评分，≤2 自动追加负面词重拍（每镜 ≤2 次，重拍花费同 confirm 语义） |
 | `vgen_provide` | manual gate 产物注入：master-asset（char-*/scene-*）/ shot-assets / video（全镜覆盖、时长 ≥0.5s）/ final-cut（.mp4 注入即 done） |
-| `vgen_channels` | 通道面板：`list` 脱敏列表 / `health` 探测健康+估价 / `spend` 累计消耗 |
+| `vgen_channels` | 通道面板：`list` 通道+用途槽绑定+预算 / `health` 探测健康+按绑定槽估价 / `spend` 累计消耗 |
 | `drama_read` | 读漫剧工坊项目的一个权威资产（内容 + revision；512KiB 截断）。提案前必读 |
 | `drama_propose` | 提交内容提案（pending，绝不直写权威文件）；baseRevision 失配 → `stale-revision` 须重读 |
 
 > 偏离说明：规格 §7.1 工具表为 7 个。manual gate 的产物注入需要独立入口，故增设 `vgen_provide`（塞进 `vgen_generate` 会污染其语义）。
 
-## 设置页（Web 设置 →「漫剧工坊」）
+## 通道配置（v3：用途槽）
 
-- **通道管理**：Base URL / API Key 与 `models[]` 自配置，模型项带 `kind`（`image` / `video` / `tts`），官方/中转皆可；支持测试通道（探测枚举模型）、一键导入、模型逐行移除、保存空列表、默认通道切换、单笔确认阈值（CNY）与 gate 缺省。API Key 只存本机 vault（0600），任何界面/响应仅回显脱敏串。
-- **环境与诊断**（2.0 新增）：ffmpeg/drawtext 检测、TTS 能力、产物根目录、插件版本。
-- run 列表与产物预览已迁往漫剧工坊「视频任务」页（2.0 起设置页不再展示）。
+通道层按**用途槽**组织：每个用途（`image.master` 主图 / `image.shot` 逐镜图 / `video` 视频 / `tts` 配音 / `music.bgm` 背景乐 / `music.song` MV 主曲）**恰好绑定一个模型**——选通道、填模型名、保存后点「测试」做一次真实小额验证。不做模型枚举导入，不支持多模型轮询兜底；未绑定的用途在运行时返回 `model-unavailable`（含槽位名与指引）。
+
+- **通道**：`Base URL + API Key` 凭证层，可建多个；「测试」= 连通性/鉴权/模型枚举自检，结论留痕（不导入）。
+- **用途槽**：模型名手填；能力位按槽声明（如 video 槽勾 `imageToVideo`/`textToVideo`——未勾 t2v 且无参考图时明确失败，不找替代模型）；`image.shot` 未绑定时回落 `image.master`。音乐槽走**通用适配器**（声明式端点映射，零服务商绑定），可套用按协议形态预填的内置模板或另存自己的模板。
+- **预算与 gate**：单笔确认阈值（unknown 价一律确认）、媒体段 gate 缺省。
+- **升级迁移**：v2 及更早的 `vault.json`（通道 `models[]` + 默认通道）在首次加载时一次性迁移为槽位绑定，原文件备份为 `vault.json.v1.bak-<时间戳>`；`models[]` 中首个 image/video/tts 分别迁移到对应槽位（image 两槽同源），music 槽留空待配置。回滚：用备份覆盖 `vault.json` 并装回旧版插件。
 
 ## 环境变量
 
 | 变量 | 作用 | 缺省 |
 |---|---|---|
 | `VGEN_AUTO_CONFIRM` | demo 脚本（`scripts/demo-*.ts`）非交互终端的成本确认放行，须显式 `=1` | 未设（交互逐笔询问，非交互拒绝） |
-| `models[]` | 默认通道的模型清单；每项 `{ model, kind }`，各 `kind` 按列表第一项选择 | 未配置时返回 `model-unavailable` |
+| `VGEN_IMAGE_MODEL` / `VGEN_VIDEO_MODEL` / `VGEN_TTS_MODEL` | 仅 `scripts/*` 直连脚本用：合成对应用途槽绑定（未设的槽保持未绑定） | 未设（对应槽 `model-unavailable`） |
 | `VGEN_TTS_VOICE` | 云端 TTS 音色（云端模型由默认通道首个 `kind=tts` 决定） | 未设（服务端缺省） |
 | `VGEN_TTS_INSTRUCTIONS` | 云端 TTS 旁白语气指令 | 未设 |
 | `VGEN_FFMPEG` | ffmpeg 可执行路径（须含 drawtext；Homebrew 精简构建常见缺失） | `ffmpeg`（PATH） |
@@ -163,8 +166,10 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 ## 已知限制
 
 - 手动提供的 shot 参考图无公网 URL → video 段自动 i2v 不可用（`vgen_provide` 响应内警示；评审重拍拒绝并给出 `rerunStage` 指引）。
-- kling 上游饱和，`pin-kling-contract.ts` 真机钉契约挂起；Windows SAPI 配音未真机验证（无 Windows 机器）。
-- happyhorse 等免费档模型带平台水印 → 仅文档警示 + 设置页备注（二期做通道白名单/降档选项）。
+- 文生视频降级：video 槽勾选 `textToVideo` 能力位后，无参考图时自动走 t2v；未勾选则明确失败（不再尝试替代模型——v3 起单槽单模型）。
+- 音乐槽（BGM/MV）配置与真实小额测试 v3 已可用；`music` 生成段与成片混音（循环/ducking）在 P1 接线，MV 先曲后镜在 P2。
+- kling 上游饱和，`pin-kling-contract.ts` 真机钉契约挂起；Windows SAPI 配音未真机验证（无 Windows 机器）；`openai-video` 通用族契约（/v1/videos）按 Sora 风格实现，真机待钉。
+- happyhorse 等免费档模型带平台水印 → 仅文档警示 + 设置页备注。
 
 **水印提示**：happyhorse 等免费档视频模型可能带平台水印，介意请在「通道管理」中改用付费模型。
 
@@ -180,7 +185,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 ```bash
 npm run typecheck   # tsc 全量类型检查
 npm test            # node --test（Node 24 strip-types 直跑）
-npm run demo:mock   # 零 key mock 全链路 demo
+npm run demo:mock   # 零 key mock 全链路 demo（内置 mock 槽位，无需配置）
 ```
 
 发布流程（bump 版本 → 写 release/vX.Y.Z.md → tag → push → npm publish）见
