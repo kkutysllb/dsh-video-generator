@@ -86,39 +86,90 @@ test('apply：无 document 环境（node）不炸——样式/导航图标注入
   assert.doesNotThrow(() => (mod['apply'] as (c: unknown) => void)(ctx))
 })
 
-test('bundle 渲染冒烟：settings 与漫剧工坊主面板首帧渲染不抛错', () => {
-  const { mod } = loadBundle()
-  const components: Array<unknown> = []
-  const ctx = {
-    slots: {
-      inject: (_type: string, loader: () => unknown) => { loader(); return () => {} },
-      register: (_opts: unknown, comp: unknown) => { components.push(comp); return () => {} },
-    },
-    locale: { register: () => () => {}, bind: () => (k: string, params?: Record<string, unknown>) => (params ? k : k) },
-    effect: (fn: () => () => void) => { fn(); return () => {} },
-    sessions: {},
-    layout: {},
-  }
-  ;(mod['apply'] as (c: unknown) => void)(ctx)
-  assert.ok(components.length >= 2, '应注册 settings 与 main 两个面板组件')
-  // 极简 React stub：createElement 造元素树、hooks 返回惰性初值。
-  // 首帧渲染只走 loading/空态分支，可捕获引用错误/hooks 顺序错误等低级缺陷。
-  const reactStub = {
-    createElement: function (type: unknown, props: unknown) {
-      const kids = Array.prototype.slice.call(arguments, 2) as unknown[]
-      return { type, props, kids: kids.flat() }
+test('bundle 渲染冒烟：递归执行组件体——空数据与完整数据两帧零抛错（白屏回归网）', () => {
+  // 背景：SlotRow 曾在草稿未初始化时读 draft.caps.* 抛 TypeError，真实 React 直接卸载
+  // 整棵设置树（白屏），而 createElement 打桩的旧冒烟从不执行组件体，漏检。本用例以
+  // 「createElement 递归调用函数组件」的方式真实执行组件体，并渲染两帧：
+  //   ①空数据首帧；②slots/模板/通道数据齐备的帧。任何抛错即失败。
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  const specRef: { current: { id: string; factory: (req: (m: string) => unknown) => Record<string, unknown> } | null } = { current: null }
+  const stubWindow = { __ModuleLoader__: { load(spec: { id: string; factory: (req: (m: string) => unknown) => Record<string, unknown> }) { specRef.current = spec } } }
+  Reflect.set(globalThis, 'window', stubWindow)
+  try { new Function(code)() } finally { Reflect.deleteProperty(globalThis, 'window') }
+  const spec = specRef.current!
+  const throws: string[] = []
+  const React = {
+    createElement: (type: unknown, props: Record<string, unknown> | null, ...kids: unknown[]) => {
+      if (typeof type === 'function') {
+        try {
+          return (type as (p: Record<string, unknown>) => unknown)({ ...(props || {}), children: kids.length === 1 ? kids[0] : kids })
+        } catch (e) {
+          throws.push(`${(type as { name?: string }).name || 'anon'}: ${e instanceof Error ? e.message : String(e)}`)
+          return null
+        }
+      }
+      return { type, props, kids }
     },
     useState: (v: unknown) => [v, () => {}],
     useEffect: () => {},
     useCallback: (f: unknown) => f,
     useRef: () => ({ current: null }),
   }
-  for (const comp of components) {
-    assert.doesNotThrow(() => {
-      ;(comp as () => unknown)()
-    }, '面板组件首帧渲染抛错')
+  const mod = spec.factory((m: string) => (m === 'react' ? React : () => { throw new Error(`require ${m}`) }))
+  let settingsComp: ((p: Record<string, unknown>) => unknown) | null = null
+  let panelComp: ((p: Record<string, unknown>) => unknown) | null = null
+  const ctx = {
+    slots: {
+      inject: (_t: string, loader: () => unknown) => { loader(); return () => {} },
+      register: (o: { name?: string }, comp?: (p: Record<string, unknown>) => unknown) => {
+        if (o.name === 'settings.section') settingsComp = comp ?? null
+        if (o.name === 'main') panelComp = comp ?? null
+        return () => {}
+      },
+    },
+    locale: { register: () => () => {}, bind: () => (k: string) => k },
+    effect: (fn: () => () => void) => { fn(); return () => {} },
+    get: () => null,
   }
-  void reactStub
+  ;(mod['apply'] as (c: unknown) => void)(ctx)
+  const sc = settingsComp as ((p: Record<string, unknown>) => unknown) | null
+  const pc = panelComp as ((p: Record<string, unknown>) => unknown) | null
+  assert.ok(sc && pc, 'settings.section 与 main 组件均应注册')
+
+  // 帧一：空数据（未配置通道/槽位/诊断）
+  const empty = { get: () => null }
+  sc(empty)
+  pc(empty)
+  // 帧二：宿主返回完整数据（slots.list / musicTemplates.list / channels.list / diagnostics 形态）
+  const populated = {
+    ...empty,
+    chans: { channels: [{ id: 'c1', label: '主站', baseUrl: 'https://x.example', apiKeyMasked: 'sk-••••5678', enabled: true, protocols: ['openai-images'] }] },
+    probe: { c1: { busy: false, ok: true, message: '探测成功：枚举到 2 个模型' } },
+    diags: { version: '3.0.0-dev', ffmpeg: { path: 'ffmpeg', version: 'v', drawtext: true }, tts: { available: false, hint: '未绑定' }, runsRoot: '/tmp/runs', projectsRoots: [] },
+    slotsData: {
+      slots: [{
+        slot: 'video', channelId: 'c1', model: 'vid-model', protocol: 'dashscope-video',
+        capabilities: { imageToVideo: true, textToVideo: false, maxDurationSec: 10 },
+        verifiedAt: '2026-09-28T00:00:00.000Z', verifyNote: 'ok: video ok',
+      }],
+      slotMeta: {
+        'image.master': { slot: 'image.master', kind: 'image', label: '主图', purpose: '角色三视图与场景主图', required: true, consumer: 'master-asset 段' },
+        video: { slot: 'video', kind: 'video', label: '视频', purpose: '逐镜视频', required: true, consumer: 'video 段' },
+      },
+    },
+    templates: [{ id: 'builtin/sync-audio-url', label: '同步 · 直返音频 URL', source: 'builtin', fields: { endpoint: { path: '/x' }, mode: 'sync', request: { promptField: 'prompt' }, response: { audioPath: 'data.url' } } }],
+    slotDrafts: {
+      'image.master': { channelId: '', model: '', protocol: 'openai-images', caps: { sizeParam: true }, mappingText: '' },
+      video: { channelId: 'c1', model: 'vid-model', protocol: 'dashscope-video', caps: { imageToVideo: true, textToVideo: false, maxDurationSec: 10 }, mappingText: '' },
+    },
+    slotMsg: { video: { busy: false, ok: true, text: '测试通过' } },
+    form: { id: '', label: '', baseUrl: '', apiKey: '' },
+    budgetDraft: { threshold: 1, gates: {} },
+    message: '', error: '',
+  }
+  sc(populated)
+  pc(populated)
+  assert.deepEqual(throws, [], '组件体零抛错（含空数据帧与完整数据帧）')
 })
 
 test('bundle：用途槽设置面——六槽、每槽单绑定保存与真实测试按钮', () => {

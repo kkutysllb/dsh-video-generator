@@ -138,7 +138,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 
 > 偏离说明：规格 §7.1 工具表为 7 个。manual gate 的产物注入需要独立入口，故增设 `vgen_provide`（塞进 `vgen_generate` 会污染其语义）。
 
-## 通道配置（v3：用途槽）
+## 通道配置（用途槽）
 
 通道层按**用途槽**组织：每个用途（`image.master` 主图 / `image.shot` 逐镜图 / `video` 视频 / `tts` 配音 / `music.bgm` 背景乐 / `music.song` MV 主曲）**恰好绑定一个模型**——选通道、填模型名、保存后点「测试」做一次真实小额验证。不做模型枚举导入，不支持多模型轮询兜底；未绑定的用途在运行时返回 `model-unavailable`（含槽位名与指引）。
 
@@ -166,7 +166,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 ## 已知限制
 
 - 手动提供的 shot 参考图无公网 URL → video 段自动 i2v 不可用（`vgen_provide` 响应内警示；评审重拍拒绝并给出 `rerunStage` 指引）。
-- 文生视频降级：video 槽勾选 `textToVideo` 能力位后，无参考图时自动走 t2v；未勾选则明确失败（不再尝试替代模型——v3 起单槽单模型）。
+- 文生视频降级：video 槽勾选 `textToVideo` 能力位后，无参考图时自动走 t2v；未勾选则明确失败（不再尝试替代模型——用途槽范式下单槽单模型）。
 - 音乐槽（BGM/MV）配置与真实小额测试 v3 已可用；`music` 生成段与成片混音（循环/ducking）在 P1 接线，MV 先曲后镜在 P2。
 - kling 上游饱和，`pin-kling-contract.ts` 真机钉契约挂起；Windows SAPI 配音未真机验证（无 Windows 机器）；`openai-video` 通用族契约（/v1/videos）按 Sora 风格实现，真机待钉。
 - happyhorse 等免费档模型带平台水印 → 仅文档警示 + 设置页备注。

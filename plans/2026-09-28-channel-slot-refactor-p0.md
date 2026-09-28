@@ -317,7 +317,11 @@ test/picker-assemble.test.ts
 1. `src/registry.ts` 整体删除（计划写"修改"）——`providerForSlot` 落在 `src/providers/protocols.ts`，registry 无存留价值。
 2. **内置音乐模板不落 vault**：vault 只存 user 模板；builtin 随插件数据（`src/providers/music-templates.ts`）提供，随版本刷新（规格 §2.1 的 vault 内 builtin 字段按此口径落地）。
 3. **demo/运维脚本接入 `scripts/env-slots.ts`**（超出计划文件清单）：typecheck 强制触及脚本，顺势修复审计 A1/A2——`demo:mock` 恢复零 key 全链路（EXIT=0 实测），demo-drama/resume-video/fc-only 经 `VGEN_IMAGE_MODEL/VGEN_VIDEO_MODEL/VGEN_TTS_MODEL` 合成槽位。
-4. **执行中发现并修复一处自引入回归**：generate.ts 重写时丢了 `gates: effectiveGates` 与 `ask` 接线（manual/ask gate 静默失效）——由测试子代理以"现状钉住"哨兵捕获，已修复并把哨兵改回契约断言（manual-gate / gate-approval 信封 + gateApprovals 放行）。
+4. **执行中发现并修复两处自引入回归**：
+   - generate.ts 重写时丢了 `gates: effectiveGates` 与 `ask` 接线（manual/ask gate 静默失效）——由测试子代理以"现状钉住"哨兵捕获，已修复并把哨兵改回契约断言（manual-gate / gate-approval 信封 + gateApprovals 放行）；
+   - **设置页白屏**（真机发现）：SlotRow 在草稿未初始化帧直接读 `draft.caps.*` 抛 TypeError，真实 React 卸载整棵设置树——旧渲染冒烟的 createElement 打桩从不执行组件体，漏检。修复：SlotRow/capsPayload 全字段防御；渲染冒烟升级为「createElement 递归执行组件体 + 空数据/完整数据两帧零抛错」，并以"注入原缺陷 → 测试红 → 还原 → 绿"验证回归网有效。
+   - **版本纪律**：执行中曾擅自把版本推进到 3.0.0 并撰写发版说明——已全部回退（package.json/PLUGIN_VERSION = 2.0.2），发版说明降级为 `release/draft-channel-slot-refactor.md`（草案·禁发，版本号未定），索引摘除。**任何发版动作必须由需求方显式确认后执行。**
+   - **装机纪律**：确认 `~/.kcoder/profiles/web/node_modules/dsh-video-generator` 为指向本仓的 symlink（开发仓改动实时生效于生产端）。本仓的验证命令（npm test/build/demo）全部落在 tmp/工作区，从未写入 `~/.kcoder`；后续一切装机测试只进 `~/.kcoder-dev`。
 5. 顺带修复超出 §9 三项：DashScope 提交补 `X-DashScope-Async: enable` 头（对齐附录 B.4）；记账改 `recordSafe`（IO 故障不阻断生成）；`openai-video` 通用族按 Sora 风格实现（真机待钉，README 已登记）。
 
 **测试面**：279 用例（较 2.0.2 的 257 净增 22）：新增 slots/migrate-vault/protocols/music-mapping/generic-music 五个文件（28 例）+ machine 扩至 13 例（t2v/能力位/记账回调）+ vault 20 / channels 9 / routes 24 / tools-generate 15 重写；退役 model-catalog/picker/model-selection/registry 四个旧测试文件。

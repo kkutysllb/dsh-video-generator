@@ -1,8 +1,12 @@
-# v3.0.0 —— 通道层重构：用途槽（每槽单模型）+ 通用音乐适配器
+# 【草案 · 未发布】通道层重构：用途槽（每槽单模型）+ 通用音乐适配器
+
+> **状态：草案，禁止发版。** 版本号未定、未经需求方确认前不得执行任何发布链
+> （commit 到 main / tag / npm publish / 镜像 / GitHub Release 均不得进行）。
+> 本文件仅作为变更说明草稿随功能分支评审。
 
 ## 版本信息
 
-- **版本**：3.0.0（破坏性变更，主版本 bump）
+- **版本**：未定（草稿；发版版本号由需求方确认）
 - **日期**：2026-09-28
 - **分支**：`feat/channel-slot-refactor`
 - **设计依据**：`docs/superpowers/specs/2026-09-28-channel-slot-refactor-design.md`（需求方逐条确认：6 槽位 / 每槽单模型 / image 两槽可同模型 / 音乐通用适配器零 provider 绑定 / 模板预填 / MV 先曲后镜 / BGM 默认开）
@@ -65,4 +69,4 @@
 
 ## 发布链
 
-（commit / tag / npm publish / sync:mirror / GitHub Release——按 `release/README.md` checklist 人工触发）
+（**全部冻结**，见顶部状态声明）
