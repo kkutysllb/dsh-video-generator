@@ -3,6 +3,7 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { harnessHome } from './store/home.ts'
 
 export interface SpendEntry {
   at: string
@@ -21,7 +22,9 @@ export class SpendLedger {
   }
 
   static open(env: NodeJS.ProcessEnv = process.env): SpendLedger {
-    const base = env['DSH_HOME'] ? join(env['DSH_HOME']!, '.dsh-video-generator') : join(homedir(), '.dsh-video-generator')
+    // 与 vault/runs 同一数据根口径（QILIN_HOME → DSH_HOME → homedir，2.0.1 起）
+    const home = harnessHome(env)
+    const base = home !== null ? join(home, '.dsh-video-generator') : join(homedir(), '.dsh-video-generator')
     return new SpendLedger(join(base, 'spend.jsonl'))
   }
 
@@ -30,6 +33,15 @@ export class SpendLedger {
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 })
     appendFileSync(this.file, line + '\n', { mode: 0o600 })
     chmodSync(this.file, 0o600)
+  }
+
+  /** 记账失败不阻断生成（审计教训：账本 IO 故障不应让已提交的任务报 internal）。 */
+  recordSafe(entry: Omit<SpendEntry, 'at'>): void {
+    try {
+      this.record(entry)
+    } catch (err) {
+      console.error('[dsh-video-generator] 记账失败（不阻断生成）:', err instanceof Error ? err.message : err)
+    }
   }
 
   totals(): { count: number; estCny: number } {

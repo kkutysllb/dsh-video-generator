@@ -22,7 +22,7 @@ function seedRun(runs: RunStore, opts: { url?: string } = {}): string {
   return run.id
 }
 
-function fakeCtx(runs: RunStore, providerCalls: string[] = [], modelCalls: string[] = [], models = [{ model: 'configured-video', kind: 'video' as const }]) {
+function fakeCtx(runs: RunStore, providerCalls: string[] = [], modelCalls: string[] = [], videoModel: string | null = 'vid-model') {
   const vaultDir = mkdtempSync(join(tmpdir(), 'vgen-vault-'))
   const vaultFile = join(vaultDir, 'vault.json')
   const fakeProvider: Provider = {
@@ -33,11 +33,16 @@ function fakeCtx(runs: RunStore, providerCalls: string[] = [], modelCalls: strin
     async fetch() { return { outputs: ['mock://out/new.mp4'] } },
     async health() { return { ok: true } },
   }
+  // video 槽绑定（videoModel=null → 槽位留空，测 model-unavailable 语义）
+  const slots = videoModel
+    ? { video: { slot: 'video' as const, channelId: 'c', model: videoModel, protocol: 'dashscope-video' as const, capabilities: { imageToVideo: true, textToVideo: false } } }
+    : {}
   return {
     vault: VaultStore.open({ file: vaultFile }),
     runs,
-    channel: () => ({ id: 'c', label: '评审通道', baseUrl: 'https://mock.invalid', apiKey: 'k', models }),
-    providersOverride: { forModel: (model: string) => { modelCalls.push(model); return fakeProvider } },
+    slots: () => slots,
+    channelOf: (channelId: string) => (channelId === 'c' ? { id: 'c', label: '评审通道', baseUrl: 'https://mock.invalid', apiKey: 'k' } : null),
+    providersOverride: { forSlot: (binding: { model: string }) => { modelCalls.push(binding.model); return fakeProvider } },
     fetchImpl: (async (_u: string) => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer })) as unknown as typeof fetch,
     extract: async (_c: string, outDir: string) => {
       mkdirSync(outDir, { recursive: true })
@@ -197,20 +202,17 @@ test('阶段B：重拍 2 次耗尽 → retry-exhausted，不再调 provider', as
 
 
 
-test('阶段B：重拍使用当前默认通道第一个 video 模型', async () => {
+test('阶段B：重拍使用 video 槽绑定模型（单槽单模型）', async () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'vgen-rev-model-'))
   const runs = RunStore.open({ rootDir })
   const modelCalls: string[] = []
-  const ctx = fakeCtx(runs, [], modelCalls, [
-    { model: 'video-first', kind: 'video' },
-    { model: 'video-second', kind: 'video' },
-  ])
+  const ctx = fakeCtx(runs, [], modelCalls, 'vid-model')
   try {
     const runId = seedRun(runs)
     const tools = buildReviewTools(ctx)
     const r = await tools.review.execute({ runId, shot: 1, score: 2, confirm: true })
     assert.equal(r.ok, true)
-    assert.deepEqual(modelCalls, ['video-first'])
+    assert.deepEqual(modelCalls, ['vid-model'])
   } finally {
     cleanup(rootDir, join(ctx.vault.file, '..'))
   }
@@ -219,7 +221,7 @@ test('阶段B：重拍使用当前默认通道第一个 video 模型', async () 
 test('阶段B：缺少 video 模型 → model-unavailable 可操作错误且不确认', async () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'vgen-rev-no-model-'))
   const runs = RunStore.open({ rootDir })
-  const ctx = fakeCtx(runs, [], [], [])
+  const ctx = fakeCtx(runs, [], [], null)
   let confirmCalls = 0
   ctx.confirmer = async () => { confirmCalls++; return true }
   try {
@@ -229,8 +231,7 @@ test('阶段B：缺少 video 模型 → model-unavailable 可操作错误且不�
     assert.equal(r.ok, false)
     if (!r.ok) {
       assert.equal(r.error.code, 'model-unavailable')
-      assert.match(r.error.message, /video/)
-      assert.match(r.error.message, /切换默认通道/)
+      assert.match(r.error.message, /用途槽/)
     }
     assert.equal(confirmCalls, 0)
   } finally {

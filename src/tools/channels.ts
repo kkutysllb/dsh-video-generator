@@ -3,6 +3,7 @@
 
 import type { VaultStore } from '../store/vault.ts'
 import type { RunStore } from '../store/runs.ts'
+import { SLOT_META } from '../store/slots.ts'
 import { probeChannel } from '../probe.ts'
 import { fetchPricing, estimateCny } from '../pricing.ts'
 import { SpendLedger } from '../spend.ts'
@@ -49,17 +50,28 @@ export function buildChannelsTools(ctx: ChannelsContext): {
           const action = args?.action ?? 'list'
           if (action === 'list') {
             const d = ctx.vault.load()
-            return { ok: true, value: { channels: ctx.vault.listChannels(), defaultChannelId: d.defaultChannelId, budget: d.budget, gateDefaults: d.gateDefaults } }
+            return {
+              ok: true,
+              value: {
+                channels: ctx.vault.listChannels(),
+                slots: ctx.vault.listSlotBindings(),
+                slotMeta: SLOT_META,
+                budget: d.budget,
+                gateDefaults: d.gateDefaults,
+              },
+            }
           }
           if (action === 'health') {
-            const id = typeof args?.channelId === 'string' && args.channelId ? args.channelId : ctx.vault.load().defaultChannelId
+            const id = typeof args?.channelId === 'string' && args.channelId ? args.channelId : null
             const ch = id ? ctx.vault.getChannel(id) : null
-            if (!ch) throw new HandoffError('not-found', id ? `通道不存在: ${id}` : '尚未配置任何通道（设置页「通道管理」或 channels.create）')
+            if (!ch) throw new HandoffError('not-found', id ? `通道不存在: ${id}` : '请指定 channelId（已无默认通道概念：每个用途槽各自绑定通道）')
             const probeResult = await probe({ baseUrl: ch.baseUrl, apiKey: ch.apiKey })
             const pricing = await fetchPricingFn({ baseUrl: ch.baseUrl, apiKey: ch.apiKey }, undefined, 15000).catch(() => null)
-            const estimates = ch.models.map((m) => ({
-              model: m.model, kind: m.kind,
-              estCny: pricing ? estimateCny(m.model, pricing) : m.pricingCny ?? null,
+            // 估价对象 = 绑定到该通道的槽位模型（不再有通道级模型清单）
+            const boundSlots = ctx.vault.listSlotBindings().filter((b) => b.channelId === ch.id)
+            const estimates = boundSlots.map((b) => ({
+              slot: b.slot, model: b.model,
+              estCny: pricing ? estimateCny(b.model, pricing) : null,
             }))
             // 不回显任何 key 形态（含脱敏串）：health 面只出通道元信息 + 探测/估价
             return {
@@ -94,12 +106,12 @@ export function channelsToolDefs(tools: ReturnType<typeof buildChannelsTools>): 
   return [
     {
       name: 'vgen_channels',
-      description: '通道面板：action=list 通道列表（脱敏）+默认通道+预算阈值+gate 缺省；action=health 探测通道（模型枚举/鉴权）+按通道模型估价；action=spend 累计消耗（全局 + 按 run）。',
+      description: '通道面板：action=list 通道列表（脱敏）+用途槽绑定+预算阈值+gate 缺省；action=health 探测通道（连通/鉴权/模型枚举）+按绑定槽估价；action=spend 累计消耗（全局 + 按 run）。',
       parameters: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['list', 'health', 'spend'], description: '缺省 list' },
-          channelId: { type: 'string', description: 'health 专用：缺省用默认通道' },
+          channelId: { type: 'string', description: 'health 专用：目标通道 id' },
         },
       },
       output: { schema: { type: 'object' }, render: jsonRender },

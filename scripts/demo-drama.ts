@@ -12,6 +12,7 @@ import readline from 'node:readline/promises'
 import { buildHandoffTools } from '../src/tools/handoff.ts'
 import { buildGenerateTools } from '../src/tools/generate.ts'
 import { buildReviewTools } from '../src/tools/review.ts'
+import { envChannelOf, envSlots } from './env-slots.ts'
 import { VaultStore } from '../src/store/vault.ts'
 import { RunStore } from '../src/store/runs.ts'
 
@@ -57,6 +58,9 @@ async function main(): Promise<void> {
   const vault = VaultStore.open({ env: { ...env, DSH_HOME: workDir } })
   const runs = RunStore.open({ env: { ...env, DSH_HOME: workDir } })
   const channel = { id: 'vectorengine', baseUrl, apiKey }
+  // v2 选型：模型来自 env（VGEN_IMAGE_MODEL/VGEN_VIDEO_MODEL/VGEN_TTS_MODEL），未设槽在运行时报 model-unavailable
+  const slots = envSlots({ channel })
+  const channelOf = envChannelOf(channel)
 
   const confirmer = async (est: number | null): Promise<boolean> => {
     if (AUTO_CONFIRM) {
@@ -73,9 +77,9 @@ async function main(): Promise<void> {
   }
 
   const handoff = buildHandoffTools({ vault, runs })
-  const generate = buildGenerateTools({ vault, runs, channel: () => channel, env: { ...env, DSH_HOME: workDir }, confirmer })
+  const generate = buildGenerateTools({ vault, runs, slots, channelOf, env: { ...env, DSH_HOME: workDir }, confirmer })
   // 评审工具与 generate 同源依赖（channel/env/confirmer 同款注入；extract 默认实现，ffmpeg 走 locateFfmpeg(env)）
-  const review = buildReviewTools({ vault, runs, channel: () => channel, env: { ...env, DSH_HOME: workDir }, confirmer })
+  const review = buildReviewTools({ vault, runs, slots, channelOf, env: { ...env, DSH_HOME: workDir }, confirmer })
 
   mkdirSync(workDir, { recursive: true })
   const r1 = await handoff.story.execute({ story: STORY })

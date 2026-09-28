@@ -1,7 +1,8 @@
 /** 断点续跑指定 run 的 video→final 段（图片/分镜段已 done 不重消费）。
  *  用途：上游分组晚高峰饱和时真机 demo 挂账，冷却后一键补跑。
  *  用法:
- *    VGEN_BASE_URL=... VGEN_API_KEY=... VGEN_FFMPEG=... VGEN_AUTO_CONFIRM=1 \
+ *    VGEN_BASE_URL=... VGEN_API_KEY=... [VGEN_IMAGE_MODEL=...] [VGEN_VIDEO_MODEL=...] [VGEN_TTS_MODEL=...] \
+ *      VGEN_FFMPEG=... VGEN_AUTO_CONFIRM=1 \
  *      [VGEN_VIDEO_MODEL=wan2.6-i2v-flash] [RESUME_MAX_ATTEMPTS=8] [RESUME_WAIT_MS=120000] \
  *      node scripts/resume-video.ts <workDir> <runId>
  *  饱和错误（消息含「饱和」）按间隔重试；其他错误立即退出。 */
@@ -10,6 +11,7 @@ import { VaultStore } from '../src/store/vault.ts'
 import { RunStore } from '../src/store/runs.ts'
 import { buildGenerateTools } from '../src/tools/generate.ts'
 import { buildReviewTools } from '../src/tools/review.ts'
+import { envChannelOf, envSlots } from './env-slots.ts'
 
 async function main(): Promise<void> {
   const workDir = process.argv[2]
@@ -22,8 +24,10 @@ async function main(): Promise<void> {
   const vault = VaultStore.open({ env })
   const runs = RunStore.open({ env })
   const channel = { id: 've', baseUrl: process.env.VGEN_BASE_URL ?? '', apiKey: process.env.VGEN_API_KEY ?? '' }
-  const gen = buildGenerateTools({ vault, runs, channel: () => channel, env, confirmer: async () => true })
-  const review = buildReviewTools({ vault, runs, channel: () => channel, env, confirmer: async () => true })
+  const slots = envSlots({ channel, env })
+  const channelOf = envChannelOf(channel)
+  const gen = buildGenerateTools({ vault, runs, slots, channelOf, env, confirmer: async () => true })
+  const review = buildReviewTools({ vault, runs, slots, channelOf, env, confirmer: async () => true })
 
   const maxAttempts = Number(process.env['RESUME_MAX_ATTEMPTS'] ?? 8)
   const waitMs = Number(process.env['RESUME_WAIT_MS'] ?? 120000)

@@ -37,20 +37,19 @@ export async function collectDiagnostics(opts: { vault: VaultStore; runs: RunSto
     ...(filters.error && version.error ? { error: version.error } : {}),
   }
   const data = opts.vault.load()
-  const defaultId = data.defaultChannelId
-  const channel = defaultId ? data.channels.find((c) => c.id === defaultId) : null
-  const ttsModel = channel?.models.find((m) => m.kind === 'tts')
+  const ttsBinding = data.slots['tts']
+  const ttsChannel = ttsBinding ? data.channels.find((c) => c.id === ttsBinding.channelId) : null
   return {
     version: opts.version,
     platform: `${process.platform}-${process.arch}`,
     ffmpeg: ffmpegOut,
-    tts: ttsModel
-      ? { available: true, model: ttsModel.model }
+    tts: ttsBinding && ttsChannel
+      ? { available: true, model: ttsBinding.model }
       : {
           available: false,
-          hint: channel
-            ? '默认通道没有 kind=tts 模型：成片旁白将回退本地系统语音（质量有限），建议在通道管理导入 TTS 模型'
-            : '尚未配置默认通道：媒体段与旁白生成不可用，请先在通道管理添加',
+          hint: ttsBinding
+            ? 'tts 槽绑定的通道不存在或已删除：成片旁白将回退本地系统语音，请在「用途槽」重新绑定'
+            : '未绑定 tts 槽：成片旁白将回退本地系统语音（质量有限），可在设置页「用途槽 → 配音」配置云端 TTS',
         },
     runsRoot: opts.runs.rootDir,
     projectsRoots: [`<workspace>/.dsh-drama`],

@@ -121,15 +121,23 @@ test('bundle 渲染冒烟：settings 与漫剧工坊主面板首帧渲染不抛�
   void reactStub
 })
 
-test('bundle：模型行支持草稿移除、保存空列表，且不保留未勾选旧模型', () => {
+test('bundle：用途槽设置面——六槽、每槽单绑定保存与真实测试按钮', () => {
   const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
-  assert.match(code, /pickerRemove/)
-  assert.match(code, /aria-label/)
-  assert.match(code, /title:/)
-  assert.match(code, /props\.onChange\(Object\.assign\(\{\}, picker, \{ rows:/)
-  assert.match(code, /patch: \{ models: submitted \}/)
-  assert.doesNotMatch(code, /未勾选但已配置/)
-  assert.doesNotMatch(code, /checked\.size === 0/)
+  // 六槽顺序表与固定协议映射（image/tts/music 固定协议；video 三族可选）
+  assert.match(code, /SLOT_ORDER = \["image\.master", "image\.shot", "video", "tts", "music\.bgm", "music\.song"\]/)
+  assert.match(code, /"music\.bgm": "generic-music"/)
+  assert.match(code, /generic-music/)
+  // 保存走 slots.set（含 capabilities / music 映射），测试走 slots.test（真实小额调用）
+  assert.match(code, /api\("slots\.set"/)
+  assert.match(code, /api\("slots\.test", \{ slot: slot \}/)
+  assert.match(code, /capabilities: capsPayload\(slot, draft\)/)
+  // 音乐槽：模板套用 + JSON 映射编辑
+  assert.match(code, /musicTemplates\.save/)
+  assert.match(code, /musicTemplates\.list/)
+  assert.match(code, /slotInvalidJson/)
+  // 默认通道交互已退役
+  assert.doesNotMatch(code, /channels\.setDefault/)
+  assert.doesNotMatch(code, /onSetDefault/)
 })
 
 test('bundle：漫剧工坊契约——PANEL_ID、drama RPC 面、提案闭环与轮询门控关键串', () => {
@@ -173,32 +181,20 @@ test('bundle：漫剧工坊双语词典键齐备（zh/en 同步）', () => {
   assert.ok(code.includes('navigator.clipboard.writeText'), '剪贴板兜底路径丢失')
 })
 
-test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {
-  const { mod } = loadBundle()
-  let dictRef: { current: { zh: Record<string, string>; en: Record<string, string> } | null } = { current: null }
-  const ctx = {
-    slots: { inject: () => () => {}, register: () => () => {} },
-    locale: {
-      register: (_n: string, d: { zh: Record<string, string>; en: Record<string, string> }) => { dictRef.current = d; return () => {} },
-      bind: () => (k: string) => k,
-    },
-    effect: (fn: () => () => void) => { fn(); return () => {} },
+test('apply：locale 字典含用途槽全套键（zh/en 同步，picker 键已退役）', () => {
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  for (const key of [
+    'slotsTitle', 'slotsIntro', 'slotChannel', 'slotModel', 'slotCaps', 'slotProtocol',
+    'slotTest', 'slotTesting', 'slotSave', 'slotUnbound', 'slotVoice', 'slotInstructions',
+    'slotMaxDur', 'slotMapping', 'slotTpl', 'slotTplSaveAs', 'slotTplSavePrompt',
+    'slotInvalidJson', 'slotTestOk', 'slotTestFail', 'slotSavedOk', 'slotNeedChannel',
+  ]) {
+    const hits = code.split(`${key}: "`).length - 1
+    assert.ok(hits >= 2, `词典键 ${key} 须 zh/en 双语齐备（现 ${hits} 处）`)
   }
-  ;(mod['apply'] as (c: unknown) => void)(ctx)
-  const dict = dictRef.current
-  assert.ok(dict, 'locale.register 未被调用')
-  const required = [
-    'pickerSearch', 'pickerFilterKind', 'pickerFilterAll',
-    'pickerSelectAll', 'pickerDeselectAll', 'pickerSave',
-    'pickerEmpty', 'pickerLabelConfigured', 'pickerLabelNew',
-    'pickerKindImage', 'pickerKindVideo', 'pickerKindTts', 'pickerSaved', 'pickerRemove',
-    'pickerTitle', 'pickerCountUnit', 'pickerCheckedHintPrefix',
-    'pickerStatCheckedPrefix', 'pickerStatRemovedPrefix',
-  ]
-  for (const k of required) {
-    // 注：允许空字符串（en.pickerCountUnit = '' 是合法设计——英文复数不分单复）
-    assert.ok(typeof dict!.zh[k] === 'string', `locale.zh.${k} 缺失`)
-    assert.ok(typeof dict!.en[k] === 'string', `locale.en.${k} 缺失`)
+  // picker 时代词典键不复存在
+  for (const dead of ['pickerSearch', 'pickerSave:', 'pickerSaved', 'adopt:']) {
+    assert.ok(!code.includes(dead), `退役词典键 ${dead} 不应存在`)
   }
 })
 

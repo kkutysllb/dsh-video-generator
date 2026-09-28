@@ -50,17 +50,23 @@ async function main(): Promise<void> {
   }) as unknown as typeof fetch
 
   const mockProvider = createMockProvider()
-  const channel = () => ({ id: 'mock', baseUrl: 'https://mock.invalid', apiKey: 'mock-key-000000' })
+  const channel = { id: 'mock', baseUrl: 'https://mock.invalid', apiKey: 'mock-key-000000' }
+  // mock 槽位：openai-images / dashscope-video 两族走 providersOverride 的 mock provider
+  const slots = () => ({
+    'image.master': { slot: 'image.master', channelId: channel.id, model: 'mock-image', protocol: 'openai-images', capabilities: {} },
+    'image.shot': { slot: 'image.shot', channelId: channel.id, model: 'mock-image', protocol: 'openai-images', capabilities: {} },
+    video: { slot: 'video', channelId: channel.id, model: 'mock-video', protocol: 'dashscope-video', capabilities: { imageToVideo: true, textToVideo: true } },
+  } as const)
   const handoff = buildHandoffTools({ vault, runs })
   const gen = buildGenerateTools({
-    vault, runs, channel, env,
-    providersOverride: { forModel: () => mockProvider },
-    fetchImpl, pricing: null, confirmer: async () => true,
+    vault, runs, slots, channelOf: (id) => (id === channel.id ? channel : null), env,
+    providersOverride: { forSlot: () => mockProvider },
+    fetchImpl, confirmer: async () => true,
   })
   const review = buildReviewTools({
-    vault, runs, channel, env,
-    providersOverride: { forModel: () => mockProvider },
-    fetchImpl, pricing: null, confirmer: async () => true,
+    vault, runs, slots, channelOf: (id) => (id === channel.id ? channel : null), env,
+    providersOverride: { forSlot: () => mockProvider },
+    fetchImpl, confirmer: async () => true,
   })
 
   const ok = (r: { ok: boolean; error?: { code: string; message: string } }, step: string): void => {

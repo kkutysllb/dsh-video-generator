@@ -8,7 +8,13 @@
 import { mkdirSync, readSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fetchPricing, estimateCny } from '../src/pricing.ts'
-import { providerForModel } from '../src/registry.ts'
+import { providerForSlot, type ChannelRef } from '../src/providers/protocols.ts'
+import type { SlotBinding } from '../src/store/slots.ts'
+
+/** v2 选型：脚本直连模式按显式模型名合成绑定（本脚本的 M2 出口语义就是钉这两个契约）。 */
+function slotOf(channel: ChannelRef, slot: SlotBinding['slot'], model: string, protocol: SlotBinding['protocol'], capabilities: Record<string, boolean> = {}): SlotBinding {
+  return { slot, channelId: channel.id, model, protocol, capabilities }
+}
 import { SpendLedger, confirmSpend } from '../src/spend.ts'
 import { RunStore } from '../src/store/runs.ts'
 
@@ -36,7 +42,7 @@ async function saveUrl(url: string, file: string): Promise<void> {
   writeFileSync(file, Buffer.from(await res.arrayBuffer()), { mode: 0o600 })
 }
 
-async function pollVideo(p: ReturnType<typeof providerForModel>, jobId: string, maxPollMs = 600000): Promise<string> {
+async function pollVideo(p: ReturnType<typeof providerForSlot>, jobId: string, maxPollMs = 600000): Promise<string> {
   const start = Date.now()
   for (;;) {
     const st = await p.status(jobId)
@@ -79,7 +85,7 @@ async function main(): Promise<void> {
   const imgEst = estimateCny(IMAGE_MODEL, pricing)
   if (!confirmSpend(imgEst, 1, (est) => askConfirm(`图像预估成本 ${est}，继续？`))) throw new Error('用户取消')
   runs.setStage(run.id, 'master-asset', 'running')
-  const imgProvider = providerForModel(channel, IMAGE_MODEL)
+  const imgProvider = providerForSlot(channel, slotOf(channel, 'image.master', IMAGE_MODEL, 'openai-images'))
   const { jobId: imgUrl } = await imgProvider.submit('master-asset', { prompt: 'a cute cartoon whale jumping over ocean waves, 3d render, clean style', size: '2048x2048' })
   ledger.record({ channel: channel.id, model: IMAGE_MODEL, kind: 'image', estCny: imgEst, jobId: imgUrl.slice(0, 60) })
   const imgFile = join(workDir, 'master.jpeg')
@@ -92,7 +98,7 @@ async function main(): Promise<void> {
   const videoEst = estimateCny(VIDEO_MODEL, pricing)
   if (!confirmSpend(videoEst, 1, (est) => askConfirm(`视频预估成本 ${est}，继续？`))) throw new Error('用户取消')
   runs.setStage(run.id, 'video', 'running')
-  const videoProvider = providerForModel(channel, VIDEO_MODEL)
+  const videoProvider = providerForSlot(channel, slotOf(channel, 'video', VIDEO_MODEL, 'dashscope-video', { imageToVideo: true }))
   console.log('[video] submitting task...')
   const { jobId: videoJob } = await videoProvider.submit('video', { prompt: '鲸鱼跃出海面溅起水花，镜头缓慢推进，电影感光影', imageUrl: imgUrl, durationSec: 5 })
   console.log(`[video] taskId=${videoJob}`)

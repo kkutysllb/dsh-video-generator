@@ -140,6 +140,7 @@ export class RunStore {
     }
     mkdirSync(this.dirOf(id), { recursive: true, mode: 0o700 })
     this.persist(record)
+    this.prune(50) // 规格 §6：保留最近 50 个 run（超限清理最旧，媒体随目录删除）
     return record
   }
 
