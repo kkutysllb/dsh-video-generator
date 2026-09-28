@@ -201,3 +201,230 @@ test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {
     assert.ok(typeof dict!.en[k] === 'string', `locale.en.${k} 缺失`)
   }
 })
+
+// ── DSH 0.1.7-rc.2 会话桥 v4（lib/client.js 模块级 __testHooks）────────
+
+interface VgenShell { setDraft(text: string): void }
+
+interface BridgeHooks {
+  currentSessionId(sessions: any): string | null
+  inputShellFor(ctx: any, sessions: any, sessionId: string): VgenShell | null
+  prefillToSession(ctx: any, sessions: any, sessionId: string, text: string, attempt?: number): Promise<string>
+  openSessionView(ctx: any, sessions: any, sessionId: string): boolean
+  sendInstructionFor(ctx: any, text: string): Promise<{ result: string; sessionId?: string }>
+}
+
+function hooks(): BridgeHooks {
+  const { mod } = loadBundle()
+  return mod['__testHooks'] as BridgeHooks
+}
+
+interface FakeShell extends VgenShell { drafts: string[] }
+function fakeShell(): FakeShell {
+  const drafts: string[] = []
+  return { drafts, setDraft(text: string) { drafts.push(text) } }
+}
+
+interface FakeSessionListState {
+  byId?: Record<string, { retainedBy?: Record<string, number> }>
+  current?: string
+  phase?: string
+}
+
+interface FakeSessions {
+  list: { getSnapshot: () => FakeSessionListState }
+  create: () => Promise<string>
+  refresh: () => Promise<void>
+  using: (id: string, options: { source: string }, op: () => unknown) => Promise<unknown>
+  scope: (id: string) => unknown
+  binding: (id: string) => { ctx: unknown } | undefined
+  calls: Record<string, unknown[]>
+}
+
+/** 0.1.7 面：无 list.current、无 sessions.open；using/scope/binding 在场。
+ *  mountAfter 控制输入壳迟到位（第 N 次解析后才挂载）。 */
+function sessions017(opts: { shell?: FakeShell | null; mountAfter?: number } = {}): FakeSessions {
+  const calls: Record<string, unknown[]> = { using: [], create: [] }
+  const shell = opts.shell === undefined ? fakeShell() : opts.shell
+  const mountAfter = opts.mountAfter ?? 0
+  let attempts = 0
+  const actx = { conversation: { input: { for: () => (attempts++ >= mountAfter && shell ? shell : null) } } }
+  return {
+    calls,
+    list: {
+      getSnapshot: () => ({
+        byId: {
+          's-1': { retainedBy: { mainView: 1 } },
+          's-2': { retainedBy: { mainView: 0, other: 1 } },
+        },
+        phase: 'ready',
+      }),
+    },
+    create: () => { calls['create']!.push(true); return Promise.resolve('s-new') },
+    refresh: () => Promise.resolve(),
+    using: (id: string, options: { source: string }, op: () => unknown) => {
+      calls['using']!.push({ id, source: options.source })
+      return Promise.resolve(op())
+    },
+    scope: () => actx,
+    binding: () => ({ ctx: actx }),
+  }
+}
+
+interface FakeCtx {
+  sessions: any
+  uiConversation: { fillDraft?: (id: string, text: string) => void }
+  layout: { selectPanel: (panel: string | null) => void }
+  get: (name: string) => unknown
+  opened: string[]
+  panels: Array<string | null>
+  filled: Array<[string, string]>
+}
+
+function ctx017(sessions: any, opts: { fillDraft?: boolean; workspace?: unknown } = {}): FakeCtx {
+  const opened: string[] = []
+  const panels: Array<string | null> = []
+  const filled: Array<[string, string]> = []
+  const workspace = 'workspace' in opts
+    ? opts.workspace
+    : { openSession: (id: string) => { opened.push(id) } }
+  return {
+    sessions,
+    uiConversation: opts.fillDraft === false ? {} : { fillDraft: (id: string, text: string) => { filled.push([id, text]) } },
+    layout: { selectPanel: (panel: string | null) => { panels.push(panel) } },
+    get: (name: string) => (name === 'uiWorkspace' ? workspace : null),
+    opened,
+    panels,
+    filled,
+  }
+}
+
+test('v4：currentSessionId 按 retainedBy.mainView 判定，旧宿主回退 list.current', () => {
+  const h = hooks()
+  assert.equal(h.currentSessionId(sessions017()), 's-1', 'mainView 持有者即当前会话')
+  const legacy = { list: { getSnapshot: () => ({ current: 's-legacy' }) } }
+  assert.equal(h.currentSessionId(legacy), 's-legacy', '旧宿主 list.current 兜底')
+  const mixed = { list: { getSnapshot: () => ({ current: 's-old', byId: { 's-1': { retainedBy: { mainView: 1 } } } }) } }
+  assert.equal(h.currentSessionId(mixed), 's-1', 'mainView 判定优先于旧 current 字段')
+  assert.equal(h.currentSessionId({}), null, '无会话面返回 null')
+  assert.equal(h.currentSessionId({ list: { getSnapshot: () => ({ byId: { 's-2': { retainedBy: { mainView: 0 } } } }) } }), null)
+})
+
+test('v4：openSessionView 走 uiWorkspace.openSession（ctx.get 软探测），缺席回退 sessions.open', () => {
+  const h = hooks()
+  const s017 = sessions017()
+  const ctx = ctx017(s017)
+  assert.equal(h.openSessionView(ctx, s017, 's-9'), true)
+  assert.deepEqual(ctx.opened, ['s-9'], '0.1.7 应经 uiWorkspace.openSession 选中并展示')
+
+  const legacyOpened: string[] = []
+  const legacySessions = { open: (id: string) => { legacyOpened.push(id) } }
+  const legacyCtx = { get: () => null }
+  assert.equal(h.openSessionView(legacyCtx, legacySessions, 's-8'), true)
+  assert.deepEqual(legacyOpened, ['s-8'], '旧宿主回退 sessions.open')
+
+  assert.equal(h.openSessionView({ get: () => null }, {}, 's-7'), false, '两代面皆无返回 false')
+})
+
+test('v4：sendInstructionFor 持引用递送（sessions.using）+ fillDraft 落地 → prefilled', async () => {
+  const h = hooks()
+  const shell = fakeShell()
+  const s017 = sessions017({ shell })
+  const ctx = ctx017(s017)
+  const out = await h.sendInstructionFor(ctx, '指令文本')
+  assert.equal(out.result, 'prefilled')
+  assert.equal(out.sessionId, 's-1')
+  assert.deepEqual(ctx.filled, [['s-1', '指令文本']], '经 uiConversation.fillDraft 写草稿')
+  assert.deepEqual(shell.drafts, [], 'fillDraft 在场时不应重复 setDraft')
+  const using = s017.calls['using'] as Array<{ id: string; source: string }>
+  assert.equal(using.length, 1, '递送期必须经 sessions.using 持引用')
+  assert.deepEqual(using[0], { id: 's-1', source: 'dsh-video-generator' })
+  assert.deepEqual(ctx.panels, [null], '预填前切回会话视图（selectPanel(null)）')
+})
+
+test('v4：无当前会话 → sessions.create() + openSession 落点后递送', async () => {
+  const h = hooks()
+  const shell = fakeShell()
+  const s017 = sessions017({ shell })
+  s017.list.getSnapshot = () => ({ byId: {}, phase: 'ready' })
+  const ctx = ctx017(s017)
+  const out = await h.sendInstructionFor(ctx, '开工')
+  assert.equal(out.result, 'prefilled')
+  assert.equal(out.sessionId, 's-new')
+  assert.equal(s017.calls['create']!.length, 1)
+  assert.deepEqual(ctx.opened, ['s-new'], '新会话经 openSessionView 展示')
+  assert.deepEqual(ctx.filled, [['s-new', '开工']])
+})
+
+test('v4：输入壳迟到位按重试参数等待（挂载后落地）', async () => {
+  const h = hooks()
+  const shell = fakeShell()
+  const s017 = sessions017({ shell, mountAfter: 3 })
+  const ctx = ctx017(s017, { fillDraft: false })
+  const out = await h.sendInstructionFor(ctx, '迟到')
+  assert.equal(out.result, 'prefilled')
+  assert.deepEqual(shell.drafts, ['迟到'], '挂载后经 shell.setDraft 落地')
+})
+
+test('v4：输入壳永不挂载 → 不假装成功，降级剪贴板/none', async () => {
+  const h = hooks()
+  const s017 = sessions017({ shell: null, mountAfter: 999 })
+  const ctx = ctx017(s017, { fillDraft: false })
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  let clipboardForced = false
+  try {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { clipboard: { writeText: () => Promise.resolve() } },
+      configurable: true,
+    })
+    clipboardForced = true
+  } catch {
+    clipboardForced = false
+  }
+  try {
+    const out = await h.sendInstructionFor(ctx, '落不了地')
+    assert.notEqual(out.result, 'prefilled', '绝不假装预填成功')
+    assert.equal(out.sessionId, 's-1')
+    assert.equal(out.result, clipboardForced ? 'copied' : 'none')
+  } finally {
+    if (clipboardForced) {
+      if (previous) Object.defineProperty(globalThis, 'navigator', previous)
+      else delete (globalThis as Record<string, unknown>)['navigator']
+    }
+  }
+})
+
+test('v4：旧宿主（≤0.1.6）软降级——list.current / sessions.open / 无 using 照常递送', async () => {
+  const h = hooks()
+  const shell = fakeShell()
+  const actx = { conversation: { input: { for: () => shell } } }
+  const legacyOpened: string[] = []
+  const legacySessions = {
+    list: { getSnapshot: () => ({ current: 's-legacy' }) },
+    open: (id: string) => { legacyOpened.push(id) },
+    scope: () => actx,
+    binding: () => ({ ctx: actx }),
+  }
+  const ctx = ctx017(legacySessions, { workspace: null })
+  const out = await h.sendInstructionFor(ctx, '旧宿主指令')
+  assert.equal(out.result, 'prefilled')
+  assert.equal(out.sessionId, 's-legacy')
+  assert.deepEqual(ctx.filled, [['s-legacy', '旧宿主指令']])
+  assert.deepEqual(legacyOpened, [], '已有当前会话不再 open')
+})
+
+test('bundle：0.1.7 会话桥 v4 契约哨兵——关键串齐备、旧面只作软降级', () => {
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  for (const marker of [
+    'retainedBy', 'mainView', 'using(sessionId', 'uiWorkspace', 'openSession',
+    'inputShellFor', 'currentSessionId', 'sendInstructionFor', 'VG_BRIDGE_RETRIES',
+  ]) {
+    assert.ok(code.includes(marker), '缺 0.1.7 契约关键串 ' + marker)
+  }
+  assert.ok(code.includes('{ source: "dsh-video-generator" }'), '递送缺 sessions.using 持引用 source')
+  assert.ok(code.includes('typeof sessions.open === "function"'), '旧宿主 sessions.open 回退分支丢失')
+  assert.ok(code.includes('list.current'), '旧宿主 list.current 兜底丢失')
+  assert.ok(code.includes('ctx.get("uiWorkspace")'), 'uiWorkspace 必须走 ctx.get 软探测（可选面不得直读）')
+  // 0.1.7 已删字段：不再把 getSnapshot().current 当唯一判据
+  assert.doesNotMatch(code, /getSnapshot\(\)\.current/)
+})

@@ -60,6 +60,22 @@ QiLin（dsh 0.1.6-alpha.2 合并后）的插件管理器只认原生键
 `dsh.*`；两通道指向同一份 `cordis.patch.yml` 与 client 交付物，
 行为完全一致。
 
+## DSH 0.1.7-rc.2 适配（v2.0.2 起）
+
+0.1.7 的契约层变更（SessionListState 删 `current`、`sessions.open()` 删、
+`binding/scope` 只认已 retain 的 generation）已全部对齐，任务指令发送桥升级为
+**会话桥 v4**：当前会话按 `retainedBy.mainView` 判定、选中并展示走
+`uiWorkspace.openSession`（可选面 `ctx.get` 软探测）、递送期 `sessions.using`
+持引用写草稿，落地才报 `prefilled`；≤0.1.6 旧宿主面保留软降级，双世代兼容。
+
+manifest 同步收口：两通道 `client.inject` 移除 0.1.7 已删包
+`@deepseek-ai/dsh-client-runtime`，并按消费面声明 6 个引擎包 + `peerDependencies`
+兼容门（范围 `>=0.1.0-rc.5 <0.2.0 || >=3.0.0 <4.0.0`，含 QiLin 3.x 运行时号；
+**全部 optional**——防止 pnpm 把引擎树拉进用户 profile，兼容门只读 peer 范围不受影响）。
+DSH 0.1.7-rc.1 起插件管理器按该范围强校验（安装期 + 启动期，
+`dsh plugin allow-version` 可精确豁免）。明细见
+[`release/v2.0.2.md`](release/v2.0.2.md) 与 [`plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md`](plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md)。
+
 ## 麒麟（QiLin）引擎安装
 
 ```bash

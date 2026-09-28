@@ -8,6 +8,8 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| [v2.0.2](v2.0.2.md) | 2026-09-25 | DSH 0.1.7-rc.2 契约适配：会话桥 v4（current 判定/openSession/持引用递送）+ manifest 死包清零 + peer 兼容门声明；**待发布**（与后续功能改动合并发） |
+| [v2.0.1](v2.0.1.md) | 2026-09-19 | QiLin 麒麟双通道适配 + 数据根统一 harnessHome + 宿主停用中断在飞生成 |
 | [v2.0.0](v2.0.0.md) | 2026-09-17 | 漫剧工坊：项目制创作工作台（小说→改编→成片）+ drama_read/drama_propose 提案闭环 + 预设退役（破坏性） |
 | [v1.0.4](v1.0.4.md) | 2026-09-09 | 生成/评审模型改为默认通道 models[] 驱动，新增 model-unavailable，模型面板支持真正删除 |
 | [v1.0.3](v1.0.3.md) | 2026-09-08 | 修复 dsh-persona preset schema 升级（`text:` → `prefix:`）——同型 bug 影响 super-ppts / animations |
