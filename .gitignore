@@ -5,3 +5,5 @@ lib/*
 *.tsbuildinfo
 .DS_Store
 .pnpm-store/
+*.tgz
+.playwright-mcp/
