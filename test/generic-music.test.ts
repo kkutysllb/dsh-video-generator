@@ -152,3 +152,33 @@ test('async 异常：提交响应缺任务 id → RelayError；prompt 为空 →
   const p2 = createGenericMusicProvider(CHANNEL, musicBinding(mapping), impl)
   await assert.rejects(p2.submit('music', {}), (e: unknown) => e instanceof RelayError && e.status === 400)
 })
+
+test('generic-music：sectionsPath 命中 → meta.sections（MV 对点 API 网格，P2）', async () => {
+  const { createGenericMusicProvider } = await import('../src/providers/generic-music.ts')
+  const { parseSlotBinding } = await import('../src/store/slots.ts')
+  const binding = parseSlotBinding('music.song', {
+    channelId: 'c', model: 'song-model', protocol: 'generic-music',
+    music: {
+      endpoint: { path: '/v1/songs' }, mode: 'sync',
+      request: { promptField: 'prompt', instrumentalField: 'instrumental' },
+      response: { audioPath: 'data.audio_url', sectionsPath: 'data.sections', sectionsStartField: 'start', sectionsEndField: 'end', sectionsLabelField: 'label' },
+    },
+  })!
+  let posted: unknown
+  const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+    posted = JSON.parse(String(init?.body))
+    return { ok: true, json: async () => ({ data: { audio_url: 'https://oss/song.mp3', sections: [
+      { label: 'Intro', start: 0, end: 8 },
+      { label: 'Chorus', start: 8, end: 20 },
+    ] } }) }
+  }) as unknown as typeof fetch
+  const provider = createGenericMusicProvider({ baseUrl: 'https://x.example', apiKey: 'k' }, binding!, fetchImpl)
+  const submitted = await provider.submit('music', { prompt: 'test song', instrumental: false }) as { jobId: string }
+  assert.ok(String(submitted.jobId).startsWith('sync-'))
+  assert.equal((posted as Record<string, unknown>)['instrumental'], false, 'song 槽 instrumental=false')
+  const f = await provider.fetch(submitted.jobId)
+  assert.deepEqual(f.meta?.sections, [
+    { label: 'Intro', startSec: 0, endSec: 8 },
+    { label: 'Chorus', startSec: 8, endSec: 20 },
+  ])
+})

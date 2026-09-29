@@ -150,3 +150,19 @@ test('buildRenderPlan：无配音时 BGM 直出（无 ducking），缺省音量 
     rmSync(workDir, { recursive: true, force: true })
   }
 })
+
+test('buildRenderPlan：MV 修剪——槽位短于源素材 → normalize -t（只裁不撑）', () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'vgen-test-'))
+  try {
+    const t = new Timeline({ width: 1080, height: 1920, fps: 24 })
+    t.addClip('/a.mp4', 1_000_000, undefined, 4_000_000) // 槽 1s、源 4s → -t 1.0
+    t.addClip('/b.mp4', 1_000_000, undefined, 1_000_000) // 槽=源 → 不加 -t
+    const plan = buildRenderPlan(t, '/out/final.mp4', { ffmpeg: '/usr/bin/ffmpeg', workDir, subtitles: false })
+    const first = plan.normalize[0]!.args
+    assert.deepEqual(first.slice(first.indexOf('-t'), first.indexOf('-t') + 2), ['-t', '1.000'])
+    const second = plan.normalize[1]!.args
+    assert.ok(!second.includes('-t'), '槽=源不修剪')
+  } finally {
+    rmSync(workDir, { recursive: true, force: true })
+  }
+})

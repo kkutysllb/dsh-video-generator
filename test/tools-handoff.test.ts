@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildHandoffTools } from '../src/tools/handoff.ts'
@@ -75,6 +75,75 @@ test('vgen_storyboard：分镜校验 + 四层提示词注入落盘 storyboard.js
     assert.ok(r.value.shots[0]!.prompt.includes('鲸鱼跃出海面溅起水花'))
     assert.ok(r.value.shots[0]!.prompt.includes('3d render, clean style'))
     assert.ok(r.value.shots[0]!.prompt.includes('林鲸（蓝色皮肤的小鲸鱼，圆眼睛）'))
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+/* ── P2：mode=mv（先曲后镜）────────────────────────────── */
+
+test('vgen_story mode=mv：run.mode 落盘；缺省 drama 不带 mode 键', async () => {
+  const c = ctx()
+  try {
+    const mv = await c.tools.story.execute({ story: STORY, mode: 'mv' }) as { value: { runId: string; mode: string } }
+    assert.equal(mv.value.mode, 'mv')
+    assert.equal(c.runs.get(mv.value.runId)?.mode, 'mv')
+    const d = await c.tools.story.execute({ story: STORY }) as { value: { runId: string; mode: string } }
+    assert.equal(d.value.mode, 'drama')
+    assert.equal('mode' in (c.runs.get(d.value.runId) ?? {}), false, 'drama 不落 mode 键')
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('vgen_storyboard：mode=mv 且 score.json 就绪 → 每镜 durationSec 预算到歌曲时长（偏差 ≤±2%）', async () => {
+  const c = ctx()
+  try {
+    const open = await c.tools.story.execute({ story: STORY, mode: 'mv' }) as { value: { runId: string } }
+    const runId = open.value.runId
+    await c.tools.script.execute({ runId, script: { ...SCRIPT } })
+    const rd = join(c.runs.rootDir, runId)
+    mkdirSync(join(rd, 'music'), { recursive: true })
+    writeFileSync(join(rd, 'music', 'score.json'), JSON.stringify({ kind: 'song', durationSec: 9, file: 'music/song.mp3', grid: { source: 'estimate', bpm: null, offsetSec: null, sections: [], beats: [] }, lyrics: [], model: 'x', channelId: 'c' }))
+    const shots = {
+      shots: [
+        { index: 1, line: '一', prompt: '画面一', characterIds: ['linjing'], durationSec: 6 },
+        { index: 2, line: '二', prompt: '画面二', characterIds: ['linjing'], durationSec: 6 },
+        { index: 3, line: '三', prompt: '画面三', characterIds: ['linjing'], durationSec: 6 },
+      ],
+    }
+    const r = await c.tools.storyboard.execute({ runId, shots: shots.shots }) as { ok: boolean }
+    assert.equal(r.ok, true)
+    const sb = JSON.parse(readFileSync(join(rd, 'storyboard.json'), 'utf8')) as { shots: Array<{ durationSec: number }> }
+    const sum = sb.shots.reduce((a, x) => a + x.durationSec, 0)
+    assert.ok(Math.abs(sum - 9) / 9 <= 0.02, `预算后总长 ${sum} 应在 9s ±2% 内`)
+    const ev = c.runs.get(runId)!.events.find((e) => e.type === 'mv-budget')
+    assert.ok(ev, 'mv-budget 事件留痕')
+    assert.equal((ev!.detail as { targetSec: number }).targetSec, 9)
+    assert.ok(existsSync(join(rd, 'storyboard.json')))
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('vgen_storyboard：drama 模式不施加 MV 预算（时长原样）', async () => {
+  const c = ctx()
+  try {
+    const open = await c.tools.story.execute({ story: STORY }) as { value: { runId: string } }
+    const runId = open.value.runId
+    await c.tools.script.execute({ runId, script: { ...SCRIPT } })
+    const rd = join(c.runs.rootDir, runId)
+    mkdirSync(join(rd, 'music'), { recursive: true })
+    writeFileSync(join(rd, 'music', 'score.json'), JSON.stringify({ durationSec: 9 }))
+    const shots = [
+      { index: 1, line: '一', prompt: '画面一', characterIds: ['linjing'], durationSec: 6 },
+      { index: 2, line: '二', prompt: '画面二', characterIds: ['linjing'], durationSec: 6 },
+    ]
+    const r = await c.tools.storyboard.execute({ runId, shots }) as { ok: boolean }
+    assert.equal(r.ok, true)
+    const sb = JSON.parse(readFileSync(join(rd, 'storyboard.json'), 'utf8')) as { shots: Array<{ durationSec: number }> }
+    assert.equal(sb.shots.reduce((a, x) => a + x.durationSec, 0), 12, 'drama 不动时长')
+    assert.ok(!c.runs.get(runId)!.events.some((e) => e.type === 'mv-budget'))
   } finally {
     rmSync(c.dir, { recursive: true, force: true })
   }

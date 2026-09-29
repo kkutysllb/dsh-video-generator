@@ -23,6 +23,8 @@ export interface ReviewEntry {
   passed: boolean
 }
 
+export type RunMode = 'drama' | 'mv'
+
 export interface RunRecord {
   id: string
   title: string
@@ -35,6 +37,8 @@ export interface RunRecord {
   reviews?: Record<string, ReviewEntry>
   /** 每段 gate 模式覆盖（可选；生效优先级 = vault.gateDefaults < run.gates < 本次调用参数）。 */
   gates?: Record<string, GateMode>
+  /** 编排模式（规格 §6.1）：drama=先镜后曲垫 BGM；mv=先曲后镜对点。缺省 drama。 */
+  mode?: RunMode
 }
 
 export function resolveRunsDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -67,6 +71,7 @@ function sanitizeRun(raw: unknown, id: string): RunRecord | null {
     updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : new Date().toISOString(),
     ...(reviews ? { reviews } : {}),
     ...(gates ? { gates } : {}),
+    ...(r.mode === 'drama' || r.mode === 'mv' ? { mode: r.mode } : {}),
   }
 }
 
@@ -226,6 +231,13 @@ export class RunStore {
   }
 
   /** 增量合并 gate 覆盖（undefined 值不清空既有键）。 */
+  /** 编排模式（规格 §6.1）：vgen_story 显式声明；缺省 drama。 */
+  setMode(id: string, mode: RunMode): void {
+    this.mutate(id, (r) => {
+      r.mode = mode
+    })
+  }
+
   setGates(id: string, gates: Record<string, GateMode>): void {
     this.mutate(id, (r) => {
       r.gates = { ...(r.gates ?? {}), ...gates }

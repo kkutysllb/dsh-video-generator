@@ -8,6 +8,7 @@ import type { VaultStore } from '../store/vault.ts'
 import type { RunStore } from '../store/runs.ts'
 import { validateStory, validateScript, validateStoryboard, HandoffError, type StoryboardShot } from '../schema/handoff.ts'
 import { buildShotPrompt } from '../prompts.ts'
+import { applyMvBudget } from '../music/budget.ts'
 import { STAGES } from '../stages.ts'
 import { DramaError } from '../store/project.ts'
 import type { DramaHost, ResolvedWorkspace } from '../drama/gateway.ts'
@@ -65,7 +66,7 @@ function wrap(fn: () => unknown): ToolResult {
 }
 
 export interface HandoffTools {
-  story: { execute: (args: { story: unknown }) => Promise<ToolResult> }
+  story: { execute: (args: Record<string, unknown>) => Promise<ToolResult> }
   script: { execute: (args: { runId: string; script: unknown }) => Promise<ToolResult> }
   storyboard: { execute: (args: { runId: string; shots: unknown; style?: string }) => Promise<ToolResult> }
 }
@@ -99,9 +100,11 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
   void vault
   return {
     story: {
-      execute: async (args) => wrap(() => {
+      execute: async (args: Record<string, unknown>) => wrap(() => {
         const story = validateStory(args?.['story'])
         const run = runs.create(story.title)
+        // 编排模式（规格 §6.1）：mv=先曲后镜对点；缺省 drama
+        if (args?.['mode'] === 'mv') runs.setMode(run.id, 'mv')
         persist(runs, run.id, 'story', story)
         runs.setStage(run.id, 'story', 'done')
         runs.appendEvent(run.id, 'stage-done', { stage: 'story' })
@@ -111,7 +114,7 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
           ref.ws.projects.linkRun(ref.projectId, ref.adaptationId, run.id)
           ref.ws.projects.mirrorAdaptationArtifact(ref.projectId, ref.adaptationId, 'story', story)
         }
-        return { runId: run.id, stages: STAGES.slice(0, 1), next: '调用 vgen_script 提交剧本', ...(ref ? { adaptationId: ref.adaptationId, projectId: ref.projectId } : {}) }
+        return { runId: run.id, mode: runs.get(run.id)?.mode ?? 'drama', stages: STAGES.slice(0, 1), next: '调用 vgen_script 提交剧本', ...(ref ? { adaptationId: ref.adaptationId, projectId: ref.projectId } : {}) }
       }),
     },
     script: {
@@ -147,6 +150,23 @@ export function buildHandoffTools(ctx: HandoffContext): HandoffTools {
           scenes: script['scenes'],
         })
         const style = typeof args?.['style'] === 'string' ? args['style'] : typeof script['style'] === 'string' ? script['style'] : ''
+        // MV 时长预算（规格 §6.5）：mode=mv 且 score.json 就绪 → 每镜 durationSec 等比缩放到歌曲时长
+        const mvRun = runs.get(runId)
+        if (mvRun?.mode === 'mv') {
+          const scoreFile = join(runDir(runs, runId), 'music', 'score.json')
+          if (existsSync(scoreFile)) {
+            try {
+              const score = JSON.parse(readFileSync(scoreFile, 'utf8')) as { durationSec?: number }
+              if (typeof score.durationSec === 'number' && score.durationSec > 0) {
+                const budget = applyMvBudget(storyboard.shots.map((sh) => sh.durationSec), score.durationSec)
+                storyboard.shots.forEach((sh, i) => { sh.durationSec = budget.durations[i] ?? sh.durationSec })
+                runs.appendEvent(runId, 'mv-budget', { targetSec: score.durationSec, beforeSec: budget.beforeSec, afterSec: budget.afterSec, deviationSec: budget.deviationSec, clamped: budget.clamped })
+              }
+            } catch {
+              // score 损坏 → 不约束（后续段仍可跑），不阻断交接
+            }
+          }
+        }
         const enriched = enrichShots(
           storyboard.shots,
           storyboard.characters as Array<{ id: string; name: string; appearance: string }>,
@@ -203,6 +223,7 @@ export function handoffToolDefs(handoff: HandoffTools): DshToolDefinition[] {
         type: 'object',
         properties: {
           story: STORY_PARAM,
+          mode: { type: 'string', enum: ['drama', 'mv'], description: '可选编排模式：mv=先曲后镜（先 vgen 音乐生成并对点，storyboard 时长自动预算到歌曲）；缺省 drama' },
           workspaceId: { type: 'string', description: '漫剧改编任务：workspaceId（来自任务指令）' },
           projectId: { type: 'string', description: '漫剧改编任务：项目 id（proj- 前缀）' },
           adaptationId: { type: 'string', description: '漫剧改编任务：改编任务 id（adapt- 前缀）' },
@@ -211,7 +232,7 @@ export function handoffToolDefs(handoff: HandoffTools): DshToolDefinition[] {
       },
       output: { schema: { type: 'object' }, render: jsonRender },
       timeoutMs: 10_000,
-      execute: (args) => handoff.story.execute(args as { story: unknown }),
+      execute: (args: unknown) => handoff.story.execute((args ?? {}) as { story: unknown; mode?: 'drama' | 'mv' }),
     },
     {
       name: 'vgen_script',

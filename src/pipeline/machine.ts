@@ -21,6 +21,8 @@ import { generateShotClip, saveUrl, SHOT_MOTION_PROMPT } from './shot-clip.ts'
 import { buildTimeline, writeSrt, type TimelineData, Timeline } from '../finalcut/timeline.ts'
 import { renderTimeline, probeDurationSec } from '../finalcut/render-ffmpeg.ts'
 import { resolveVoice, buildMacSayCommand, buildSapiScript, synthesizeCloudSpeech, type CloudTtsConfig } from '../finalcut/voice.ts'
+import { analyzeMusicFile, type MusicSection } from '../music/analyze.ts'
+import { assembleScore, beatsFrom, evenSections, parseLyricsSections, type MusicGrid } from '../music/score.ts'
 
 export interface MachineDeps {
   runs: RunStore
@@ -100,6 +102,27 @@ function runExec(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: 120000, maxBuffer: 8 * 1024 * 1024 }, (err) => (err ? reject(err) : resolve()))
   })
+}
+
+/** 歌词资产（vgen_script 落盘 lyrics.json）→ 文本；缺失/损坏 → null。 */
+function readLyricsText(runs: RunStore, runId: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(runs.rootDir, runId, 'lyrics.json'), 'utf8')) as { lyrics?: unknown }
+    return typeof parsed.lyrics === 'string' && parsed.lyrics.trim() ? parsed.lyrics : null
+  } catch {
+    return null
+  }
+}
+
+/** score.json 的歌曲时长（秒）；缺失/损坏 → 0。 */
+function readScoreDuration(runs: RunStore, runId: string): number {
+  try {
+    const parsed = JSON.parse(readFileSync(join(runs.rootDir, runId, 'music', 'score.json'), 'utf8')) as { durationSec?: unknown }
+    const v = Number(parsed.durationSec)
+    return Number.isFinite(v) && v > 0 ? v : 0
+  } catch {
+    return 0
+  }
 }
 
 function readJson<T>(runs: RunStore, runId: string, name: string): T {
@@ -415,31 +438,40 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
     const st: StageId = 'music'
     const current = runs.get(runId)!.stages
     if (current[st] !== 'done') {
-      const bgm = deps.slots['music.bgm']
-      if (!bgm) {
-        // D6：BGM 未绑定 → 跳过留痕，不阻断成片
-        runs.appendEvent(runId, 'music-skip', { reason: '用途槽 music.bgm 未绑定（BGM 关闭）' })
+      // 编排模式（规格 §6.1）：mv 用 MV 主曲（music.song，吃歌词），drama 用 BGM（music.bgm）
+      const isMv = (runs.get(runId)!.mode ?? 'drama') === 'mv'
+      const slotId: 'music.bgm' | 'music.song' = isMv ? 'music.song' : 'music.bgm'
+      const musicBinding = deps.slots[slotId]
+      if (!musicBinding) {
+        // D6：未绑定 → 跳过留痕，不阻断成片
+        runs.appendEvent(runId, 'music-skip', { reason: `用途槽 ${slotId} 未绑定${isMv ? '（MV 需要 MV 主曲）' : '（BGM 关闭）'}` })
       } else {
         const explicitTarget = targetIdx === STAGES.indexOf('music')
-        await ensureGate(st, 'BGM 生成')
+        await ensureGate(st, isMv ? 'MV 主曲生成' : 'BGM 生成')
         const script = readJson<{ style?: string }>(runs, runId, 'script')
         const sb = readJson<{ shots: Array<{ durationSec?: number }> }>(runs, runId, 'storyboard')
         // 时长请求 = 分镜时长合计（下限 15s）；成片端再做循环补长/裁切归一
         const estTotalSec = sb.shots.reduce((acc, s) => acc + (s.durationSec ?? 5), 0)
         const durationSec = Math.max(15, Math.min(300, Math.ceil(estTotalSec)))
-        const channel = deps.channelFor(bgm)
-        const provider = deps.providers.forSlot(bgm, channel, { fetchImpl })
+        const channel = deps.channelFor(musicBinding)
+        const provider = deps.providers.forSlot(musicBinding, channel, { fetchImpl })
         const musicDir = join(runs.rootDir, runId, 'music')
-        const outFile = join(musicDir, 'bgm.mp3')
+        const baseName = isMv ? 'song' : 'bgm'
+        const outFile = join(musicDir, `${baseName}.mp3`)
         try {
           begin(st)
           mkdirSync(musicDir, { recursive: true })
-          const est = deps.estimate(bgm)
+          const est = deps.estimate(musicBinding)
           if (!(await deps.confirmer(est, 'music'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
-          const prompt = `Instrumental background music, ${script.style || 'cinematic'}, calm and unobtrusive, seamless loop, no vocals`
-          const { jobId } = await retryTransient(() => provider.submit(st, { prompt, instrumental: true, durationSec }))
-          runs.appendEvent(runId, 'spend', { stage: st, model: bgm.model, estCny: est, jobId: String(jobId).slice(0, 80) })
-          deps.recordSpend?.({ channel: channel.id, model: bgm.model, kind: 'music', estCny: est, jobId: String(jobId).slice(0, 80) })
+          const lyricsText = isMv ? readLyricsText(runs, runId) : null
+          const prompt = isMv
+            ? `Comic-drama MV song, ${script.style || 'cinematic'}, catchy melody, clear structure, vocals`
+            : `Instrumental background music, ${script.style || 'cinematic'}, calm and unobtrusive, seamless loop, no vocals`
+          const spec: Record<string, unknown> = { prompt, instrumental: !isMv, durationSec }
+          if (isMv && lyricsText) spec['lyrics'] = lyricsText
+          const { jobId } = await retryTransient(() => provider.submit(st, spec))
+          runs.appendEvent(runId, 'spend', { stage: st, model: musicBinding.model, estCny: est, jobId: String(jobId).slice(0, 80) })
+          deps.recordSpend?.({ channel: channel.id, model: musicBinding.model, kind: 'music', estCny: est, jobId: String(jobId).slice(0, 80) })
           const finalState = await pollUntil(
             () => provider.status(String(jobId)),
             { isFinal: (s) => s.state === 'done' || s.state === 'failed', delayMs: deps.pollDelayMs ?? 1000, maxPollMs: 600000 },
@@ -456,13 +488,45 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
             await saveUrl(fetchImpl, url, outFile, headers)
           }
           const durSec = deps.ffmpeg ? await probeDurationSec(outFile, deps.ffmpeg) : null
-          runs.appendEvent(runId, 'music-done', { file: 'music/bgm.mp3', durationSec: durSec, requestedSec: durationSec })
+          const effectiveSec = durSec ?? durationSec
+          // 网格三级来源（规格 §6.4）：api（适配器 sectionsPath）＞ 本地 PCM 分析 ＞ 均分估算——如实标注
+          const apiSections = (f.meta as { sections?: MusicSection[] } | undefined)?.sections
+          const lyricSections = lyricsText ? parseLyricsSections(lyricsText).length : 0
+          let grid: MusicGrid
+          if (apiSections?.length) {
+            grid = { source: 'api', bpm: null, offsetSec: null, sections: apiSections, beats: beatsFrom(null, null, effectiveSec) }
+          } else if (deps.ffmpeg) {
+            try {
+              const a = await analyzeMusicFile(outFile, deps.ffmpeg)
+              if (a.sections.length >= 2) {
+                grid = { source: 'local-analysis', bpm: a.bpm, offsetSec: a.offsetSec, sections: a.sections, beats: beatsFrom(a.bpm, a.offsetSec, effectiveSec) }
+              } else {
+                grid = { source: 'estimate', bpm: null, offsetSec: null, sections: evenSections(isMv ? Math.max(2, lyricSections) : 3, effectiveSec), beats: [] }
+              }
+            } catch {
+              grid = { source: 'estimate', bpm: null, offsetSec: null, sections: evenSections(isMv ? Math.max(2, lyricSections) : 3, effectiveSec), beats: [] }
+            }
+          } else {
+            grid = { source: 'estimate', bpm: null, offsetSec: null, sections: evenSections(isMv ? Math.max(2, lyricSections) : 3, effectiveSec), beats: [] }
+          }
+          const score = assembleScore({
+            kind: isMv ? 'song' : 'bgm',
+            file: `music/${baseName}.mp3`,
+            durationSec: effectiveSec,
+            grid,
+            lyricsText: isMv ? (lyricsText ?? '') : '',
+            model: musicBinding.model,
+            channelId: channel.id,
+          })
+          writeFileSync(join(musicDir, 'score.json'), JSON.stringify(score, null, 2) + '\n', { mode: 0o600 })
+          runs.appendEvent(runId, 'score-written', { file: 'music/score.json', source: grid.source, bpm: grid.bpm, sections: grid.sections.length })
+          runs.appendEvent(runId, 'music-done', { file: `music/${baseName}.mp3`, durationSec: durSec, requestedSec: durationSec, kind: isMv ? 'song' : 'bgm' })
           done(st)
         } catch (err) {
           runs.setStage(runId, st, 'failed')
           const msg = err instanceof Error ? err.message : String(err)
           runs.appendEvent(runId, 'music-failed', { error: msg.slice(0, 300) })
-          if (explicitTarget) throw wrapBindingError(bgm, err)
+          if (explicitTarget) throw wrapBindingError(musicBinding, err)
           // D6：路径过段（target=final）时音乐失败不阻断 final-cut，成片仍出
         }
       }
@@ -482,7 +546,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       const ttsBinding = deps.slots['tts']
       try {
         begin(st)
-        const timelineShots: Array<{ video: string; durationUs: number; subtitle?: string; audio?: string; audioDurationUs?: number }> = []
+        const timelineShots: Array<{ video: string; durationUs: number; subtitle?: string; audio?: string; audioDurationUs?: number; srcDurationSec?: number }> = []
         for (const shot of sb.shots) {
           const clip = join(clipsDir, `shot-${String(shot.index).padStart(3, '0')}.mp4`)
           if (!existsSync(clip)) throw new Error(`final-cut 缺少视频片段: ${clip}`)
@@ -538,12 +602,29 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
             subtitle,
             audio,
             audioDurationUs: audioDurUs,
+            srcDurationSec: durSec,
           })
         }
+        // MV 对点收口（规格 §6.5）：总长超歌 >2% → 等比修剪（渲染端按槽位 -t 裁超长素材）
+        if ((record.mode ?? 'drama') === 'mv') {
+          const songSec = readScoreDuration(runs, runId)
+          if (songSec > 0) {
+            const targetUs = Math.round(songSec * 1e6)
+            const totalUs = timelineShots.reduce((acc, t) => acc + t.durationUs, 0)
+            if (totalUs > targetUs * 1.02) {
+              const k = targetUs / totalUs
+              timelineShots.forEach((t) => { t.durationUs = Math.round(t.durationUs * k) })
+              runs.appendEvent(runId, 'mv-trim', { beforeUs: totalUs, afterUs: targetUs })
+            } else {
+              runs.appendEvent(runId, 'mv-deviation', { totalUs, targetUs })
+            }
+          }
+        }
         const data = buildTimeline({ canvas: { width: 1080, height: 1920, fps: 24 }, shots: timelineShots })
-        // BGM 混入（D6 默认开）：存在 music/bgm.mp3 即垫底；渲染端循环补长/裁切 + ducking + 淡入淡出
-        const bgmFile = join(runs.rootDir, runId, 'music', 'bgm.mp3')
-        if (existsSync(bgmFile)) {
+        // BGM/MV 主曲混入（D6 默认开）：渲染端循环补长/裁切 + ducking + 淡入淡出
+        const bgmCandidates = (record.mode ?? 'drama') === 'mv' ? ['music/song.mp3', 'music/bgm.mp3'] : ['music/bgm.mp3']
+        const bgmFile = bgmCandidates.map((f) => join(runs.rootDir, runId, f)).find((p) => existsSync(p))
+        if (bgmFile) {
           data.addMusic(bgmFile, undefined, 0.22)
           runs.appendEvent(runId, 'bgm-mix', { file: 'music/bgm.mp3', volume: 0.22 })
         }

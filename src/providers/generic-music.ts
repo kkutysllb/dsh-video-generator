@@ -9,6 +9,7 @@
 import { getJson, postJson, RelayError } from './relay-http.ts'
 import { assertProvider, type Provider } from '../provider.ts'
 import type { GenericMusicMapping, SlotBinding } from '../store/slots.ts'
+import type { MusicSection } from '../music/analyze.ts'
 
 export interface GenericMusicChannel {
   baseUrl: string
@@ -23,8 +24,9 @@ export interface MusicSubmitSpec {
   referenceAudioUrl?: string
 }
 
-/** sync 模式的音频暂存（进程内；机器层在同一次推进内 submit→fetch，无跨进程需求）。 */
-const syncAudio = new Map<string, { url?: string; base64?: string }>()
+/** sync 模式的音频暂存（进程内；机器层在同一次推进内 submit→fetch，无跨进程需求）。
+ *  sections：sectionsPath 命中时随 submit 一并缓存（sync 响应不落盘，fetch 无法重取）。 */
+const syncAudio = new Map<string, { url?: string; base64?: string; sections?: MusicSection[] }>()
 
 /** 点号 + [n] 下标的最小路径求值；任何一步缺失返回 undefined（不计正则/通配）。 */
 export function readPath(value: unknown, path: string): unknown {
@@ -61,6 +63,30 @@ function buildBody(binding: SlotBinding, spec: MusicSubmitSpec): Record<string, 
   return body
 }
 
+/** sectionsPath 命中 → 段落数组（MV 对点 P2：API 来源的网格）。 */
+function extractSections(raw: unknown, mapping: GenericMusicMapping): MusicSection[] | null {
+  if (!mapping.response.sectionsPath) return null
+  const arr = readPath(raw, mapping.response.sectionsPath)
+  if (!Array.isArray(arr) || arr.length === 0) return null
+  const num = (v: unknown): number | null => {
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? n : null
+  }
+  const sections: MusicSection[] = []
+  for (const item of arr) {
+    if (typeof item !== 'object' || item === null) continue
+    const rec = item as Record<string, unknown>
+    const startSec = num(rec[mapping.response.sectionsStartField ?? 'startSec'])
+    const endSec = num(rec[mapping.response.sectionsEndField ?? 'endSec'])
+    if (startSec === null || endSec === null || endSec <= startSec) continue
+    const label = typeof rec[mapping.response.sectionsLabelField ?? 'label'] === 'string'
+      ? (rec[mapping.response.sectionsLabelField ?? 'label'] as string).slice(0, 32)
+      : `S${sections.length + 1}`
+    sections.push({ label, startSec, endSec })
+  }
+  return sections.length > 0 ? sections : null
+}
+
 function extractAudio(raw: unknown, mapping: GenericMusicMapping): { url?: string; base64?: string } {
   const value = readPath(raw, mapping.response.audioPath)
   if (typeof value === 'string' && value.length > 0) {
@@ -92,8 +118,9 @@ export function createGenericMusicProvider(channel: GenericMusicChannel, binding
       const json = await postJson<unknown>(`${base}${m.endpoint.path}`, channel.apiKey, body, fetchImpl, 120000)
       if (m.mode === 'sync') {
         const audio = extractAudio(json, m)
+        const sections = extractSections(json, m)
         const jobId = `sync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-        syncAudio.set(jobId, audio)
+        syncAudio.set(jobId, { ...audio, ...(sections ? { sections } : {}) })
         if (syncAudio.size > 32) {
           const oldest = syncAudio.keys().next().value
           if (oldest !== undefined) syncAudio.delete(oldest)
@@ -123,14 +150,15 @@ export function createGenericMusicProvider(channel: GenericMusicChannel, binding
         const audio = syncAudio.get(jobId)
         if (!audio) throw new RelayError(404, `音乐任务不存在或已过期: ${jobId}`)
         syncAudio.delete(jobId)
-        if (audio.base64 !== undefined) return { outputs: [''], meta: { audioBase64: audio.base64 } }
-        return { outputs: [audio.url ?? ''], meta: { urlIsSigned: m.response.urlIsSigned === true } }
+        if (audio.base64 !== undefined) return { outputs: [''], meta: { audioBase64: audio.base64, ...(audio.sections ? { sections: audio.sections } : {}) } }
+        return { outputs: [audio.url ?? ''], meta: { urlIsSigned: m.response.urlIsSigned === true, ...(audio.sections ? { sections: audio.sections } : {}) } }
       }
       const statusPath = (m.endpoint.statusPath ?? '').replace('{id}', encodeURIComponent(jobId))
       const json = await getJson<unknown>(`${base}${statusPath}`, channel.apiKey, fetchImpl, 15000)
       const audio = extractAudio(json, m)
-      if (audio.base64 !== undefined) return { outputs: [''], meta: { audioBase64: audio.base64 } }
-      return { outputs: [audio.url ?? ''], meta: { urlIsSigned: m.response.urlIsSigned === true } }
+      const sections = extractSections(json, m)
+      if (audio.base64 !== undefined) return { outputs: [''], meta: { audioBase64: audio.base64, ...(sections ? { sections } : {}) } }
+      return { outputs: [audio.url ?? ''], meta: { urlIsSigned: m.response.urlIsSigned === true, ...(sections ? { sections } : {}) } }
     },
     async health() {
       return { ok: true, quotaRemaining: null }

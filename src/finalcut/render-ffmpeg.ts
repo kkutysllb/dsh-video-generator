@@ -57,6 +57,10 @@ export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: st
       '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
       out,
     ]
+    // MV 对点（规格 §6.5）：槽位短于源素材 → 修剪（长于则后续段 concat 自然衔接，不撑帧）
+    if (c.durationUs !== undefined && c.srcDurationUs !== undefined && c.srcDurationUs > c.durationUs * 1.01) {
+      args.splice(args.indexOf('-an'), 0, '-t', (c.durationUs / 1e6).toFixed(3))
+    }
     return { src: c.src, out, args }
   })
 

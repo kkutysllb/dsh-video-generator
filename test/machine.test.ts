@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { advanceRun } from '../src/pipeline/machine.ts'
@@ -511,6 +511,68 @@ test('P1 music 段：过段失败不阻断 final-cut（D6——错误被吞，�
     )
     assert.equal(s.runs.get(s.run.id)!.stages['music'], 'failed')
     assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-failed'))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+/* ── P2：mode=mv（先曲后镜 + 网格/score）────────────── */
+
+test('P2 mode=mv：music 段走 music.song 槽 + 注入歌词 + score.json（grid 溯源）', async () => {
+  const s = setup()
+  try {
+    s.runs.setMode(s.run.id, 'mv')
+    writeFileSync(join(s.rd, 'lyrics.json'), JSON.stringify({ lyrics: '[Verse]\n第一句\n第二句\n[Chorus]\n副歌\n桥段\n尾声' }))
+    const musicSpecs: Array<Record<string, unknown>> = []
+    const providers = {
+      forSlot: (b: SlotBinding) => {
+        if (b.slot === 'music.song') {
+          return {
+            id: 'fake-song', capabilities: { tts: true, qualityTier: 5 },
+            quote: async () => ({ qualityTier: 5, costEstimate: 0.9, currency: 'CNY' }),
+            submit: async (_s: string, spec: Record<string, unknown>) => { musicSpecs.push({ ...spec }); return { jobId: 'song-1' } },
+            status: async () => ({ state: 'done' as const, progress: 100 }),
+            fetch: async () => ({ outputs: ['https://oss.example/song.mp3'], meta: { sections: [{ label: 'Intro', startSec: 0, endSec: 8 }, { label: 'Chorus', startSec: 8, endSec: 15 }] } }),
+            health: async () => ({ ok: true }),
+          }
+        }
+        return fakeImageProvider(`https://img.example/${b.slot}.png`)
+      },
+    }
+    const r = await advanceRun({
+      ...BASE, slots: slots({ 'music.song': slot('music.song', 'song-model') }),
+      runs: s.runs, runId: s.run.id, target: 'music', providers,
+      confirmer: async () => true, ffmpeg: null, pollDelayMs: 1,
+    })
+    assert.equal(r.stages['music'], 'done')
+    assert.ok(existsSync(join(s.rd, 'music', 'song.mp3')))
+    // 提交契约：instrumental=false + 歌词注入
+    assert.equal(musicSpecs[0]!['instrumental'], false)
+    assert.ok(String(musicSpecs[0]!['lyrics']).includes('[Chorus]'))
+    // score.json：grid.source=api（适配器 sections 命中）+ 歌词行时间轴
+    const score = JSON.parse(readFileSync(join(s.rd, 'music', 'score.json'), 'utf8')) as { kind: string; grid: { source: string; sections: unknown[] }; lyrics: unknown[] }
+    assert.equal(score.kind, 'song')
+    assert.equal(score.grid.source, 'api')
+    assert.equal(score.grid.sections.length, 2)
+    assert.ok(score.lyrics.length >= 2, '歌词行时间轴已生成')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('P2 mode=mv：music.song 未绑定 → music-skip（原因指明 MV 主曲）', async () => {
+  const s = setup()
+  try {
+    // setup 不支持 mode——直接 setMode
+    s.runs.setMode(s.run.id, 'mv')
+    const r = await advanceRun({
+      ...BASE, runs: s.runs, runId: s.run.id, target: 'music',
+      providers: { forSlot: () => fakeImageProvider('https://img.example/x.png') },
+      confirmer: async () => true, ffmpeg: null,
+    })
+    assert.notEqual(r.stages['music'], 'done')
+    const ev = s.runs.get(s.run.id)!.events.find((e) => e.type === 'music-skip')
+    assert.match(String((ev?.detail as { reason?: string }).reason), /music\.song/)
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }

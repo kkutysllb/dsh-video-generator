@@ -11,6 +11,8 @@ export interface TimelineClip {
   startUs: number
   durationUs: number
   volume?: number
+  /** 源素材实际时长（探测值）：MV 对点时渲染端据此对超长素材 -t 修剪（只裁不撑）。 */
+  srcDurationUs?: number
 }
 
 export interface TimelineSubtitle {
@@ -59,9 +61,13 @@ export class Timeline {
     return this.clips.reduce((acc, c) => Math.max(acc, c.startUs + c.durationUs), 0)
   }
 
-  addClip(src: string, durationUs: number, volume?: number): TimelineClip {
+  addClip(src: string, durationUs: number, volume?: number, srcDurationUs?: number): TimelineClip {
     const startUs = this.clips.reduce((acc, c) => acc + c.durationUs, 0)
-    const clip: TimelineClip = { src, startUs, durationUs, ...(volume !== undefined ? { volume } : {}) }
+    const clip: TimelineClip = {
+      src, startUs, durationUs,
+      ...(volume !== undefined ? { volume } : {}),
+      ...(srcDurationUs !== undefined ? { srcDurationUs } : {}),
+    }
     this.clips.push(clip)
     return clip
   }
@@ -85,6 +91,8 @@ export interface TimelineShotInput {
   subtitle?: string
   audio?: string
   audioDurationUs?: number
+  /** 源素材探测时长（秒）——MV 修剪判定用。 */
+  srcDurationSec?: number
 }
 
 /** 镜头数组 → 时间线：每镜 clip；有台词给 subtitle（覆盖该镜区间）；有配音给 audio。镜头时长 = max(视频, 配音+400ms)。 */
@@ -93,7 +101,7 @@ export function buildTimeline(input: { canvas: CanvasSpec; shots: TimelineShotIn
   for (const shot of input.shots) {
     const audioPadUs = shot.audio ? 400_000 : 0
     const durationUs = Math.max(shot.durationUs, (shot.audioDurationUs ?? 0) + audioPadUs)
-    t.addClip(shot.video, durationUs)
+    t.addClip(shot.video, durationUs, undefined, shot.srcDurationSec)
     const startUs = t.clips[t.clips.length - 1]!.startUs
     if (shot.subtitle) t.addSubtitle(shot.subtitle, startUs, startUs + durationUs)
     if (shot.audio) t.addAudio(shot.audio, startUs + 200_000, shot.audioDurationUs)
