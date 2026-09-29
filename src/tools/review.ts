@@ -1,41 +1,45 @@
 /** vgen_review：两阶段质量评审闭环（规格 §5.3）。
  *  阶段A（无 score）：抽该镜成片 25/50/75% 三帧，返回路径 + 评分指引（会话模型用读图工具查看）。
  *  阶段B（带 score）：1-5 clamp 记录进 run.json；≤2 自动追加负面词重拍（每镜 ≤2 次，花费走 confirm 语义）；
- *  非法 score 兜底不重拍（review-invalid 事件留痕）。重拍后自动重新抽帧，闭环回阶段B。 */
+ *  非法 score 兜底不重拍（review-invalid 事件留痕）。重拍后自动重新抽帧，闭环回阶段B。
+ *  重拍模型来自「用途槽 → 视频」绑定（单槽单模型）；重拍恒为 i2v（需原参考图 URL）。 */
 
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import type { VaultStore } from '../store/vault.ts'
 import type { RunStore, RunEvent } from '../store/runs.ts'
-import type { ChannelRef } from '../registry.ts'
+import { capabilityFlag, type SlotBinding, type SlotId } from '../store/slots.ts'
+import type { ChannelRef } from '../providers/protocols.ts'
 import type { Provider } from '../provider.ts'
-import { providerForModel } from '../registry.ts'
+import { providerForSlot } from '../providers/protocols.ts'
 import { fetchPricing, estimateCny, type PricingTable } from '../pricing.ts'
+import { SpendLedger, confirmSpend } from '../spend.ts'
 import { locateFfmpeg } from '../finalcut/render-ffmpeg.ts'
 import { extractReviewFrames } from '../review/frames.ts'
 import { generateShotClip, SHOT_MOTION_PROMPT } from '../pipeline/shot-clip.ts'
 import { GENERIC_NEGATIVE } from '../prompts.ts'
-import { isExplicitModelUnavailable, ModelUnavailableError, modelUnavailableFrom, selectConfiguredModel } from '../model-selection.ts'
+import { bindingUnavailable, isExplicitModelUnavailable, ModelUnavailableError, requireSlotBinding } from '../model-selection.ts'
 import { HandoffError } from '../schema/handoff.ts'
 import type { ToolResult, DshToolDefinition } from './handoff.ts'
 
 export interface ReviewContext {
   vault: VaultStore
   runs: RunStore
-  /** 默认通道解析（与 vgen_generate 同一注入形态）。 */
-  channel: () => ChannelRef
+  /** 槽位绑定表（与 vgen_generate 同一注入形态）。 */
+  slots: () => Partial<Record<SlotId, SlotBinding>>
+  /** 凭证解析：通道不存在返回 null（此处转 bindingUnavailable）。 */
+  channelOf: (channelId: string) => ChannelRef | null
   env?: NodeJS.ProcessEnv
   /** undefined → 按需 fetchPricing（失败容错 null）；测试传 null 跳过。 */
   pricing?: PricingTable | null
-  /** 测试注入：重拍花费确认。生产 = args.confirm 语义。 */
+  /** 测试注入：重拍花费确认。生产 = 阈值 + args.confirm 语义。 */
   confirmer?: (est: number | null) => Promise<boolean>
-  providersOverride?: { forModel: (model: string, opts?: { fetchImpl?: typeof fetch }) => Provider }
+  providersOverride?: { forSlot: (binding: SlotBinding, channel: ChannelRef, opts?: { fetchImpl?: typeof fetch }) => Provider }
   fetchImpl?: typeof fetch
   /** 测试注入：抽帧实现。 */
   extract?: typeof extractReviewFrames
   /** undefined → locateFfmpeg(env)。 */
   ffmpeg?: string | null
-  videoModel?: string
 }
 
 export interface ReviewArgs {
@@ -61,6 +65,7 @@ export function buildReviewTools(ctx: ReviewContext): {
   review: { execute: (args: ReviewArgs) => Promise<ToolResult> }
 } {
   const env = ctx.env ?? process.env
+  const ledger = SpendLedger.open(env)
   return {
     review: {
       execute: async (args): Promise<ToolResult> => {
@@ -136,26 +141,31 @@ export function buildReviewTools(ctx: ReviewContext): {
           const sb = JSON.parse(readFileSync(sbFile, 'utf8')) as { shots: Array<{ index: number; durationSec?: number }> }
           const durationSec = sb.shots.find((s) => s.index === shot)?.durationSec ?? 5
 
+          // video 槽绑定（重拍恒为 i2v：需要 imageToVideo 能力位）
+          const slots = ctx.slots()
+          const videoBinding = requireSlotBinding(slots, 'video')
+          if (!capabilityFlag(videoBinding, 'imageToVideo', true)) {
+            throw bindingUnavailable(videoBinding, '重拍为图生视频：该槽位未启用 imageToVideo 能力位')
+          }
+          const channel = ctx.channelOf(videoBinding.channelId)
+          if (!channel) throw bindingUnavailable(videoBinding, `通道不存在或已删除: ${videoBinding.channelId}`)
+
           const hint = typeof args.negativeHint === 'string' ? args.negativeHint.trim() : ''
           const negatives = [...GENERIC_NEGATIVE, ...(hint ? [hint] : [])]
           const prompt = `${SHOT_MOTION_PROMPT}。负面要求：${negatives.join('、')}`
 
-          // 花费确认（与 vgen_generate 同语义）
-          const channel = ctx.channel()
+          // 花费确认（与 vgen_generate 同语义：unknown 一律确认；≤阈值放行；超阈值确认）
           let pricingMaybe = ctx.pricing
           if (pricingMaybe === undefined) pricingMaybe = await fetchPricing(channel, undefined, 15000).catch(() => null)
           const pricing = pricingMaybe
-          const videoModel = ctx.videoModel ?? selectConfiguredModel(channel, 'video')
+          const est = pricing ? estimateCny(videoBinding.model, pricing) : null
           const provider = ctx.providersOverride
-            ? ctx.providersOverride.forModel(videoModel, { fetchImpl })
-            : providerForModel(channel, videoModel, { fetchImpl, estimate: pricing ? (m: string) => estimateCny(m, pricing) : undefined })
-          if (!provider.capabilities.imageToVideo) {
-            throw modelUnavailableFrom(channel, 'video', videoModel, `Provider ${provider.id} 不支持 image-to-video`)
-          }
-          const est = pricing ? estimateCny(videoModel, pricing) : null
+            ? ctx.providersOverride.forSlot(videoBinding, channel, { fetchImpl })
+            : providerForSlot(channel, videoBinding, { fetchImpl })
           let approved = false
           if (ctx.confirmer) approved = await ctx.confirmer(est)
           else if (args.confirm === true) approved = true
+          else approved = confirmSpend(est, ctx.vault.getBudget().confirmThresholdCny, () => false)
           if (!approved) {
             return {
               ok: false,
@@ -171,7 +181,8 @@ export function buildReviewTools(ctx: ReviewContext): {
               pollDelayMs: pollDelayFromEnv(env),
               // spend 事件在 submit 成功即落（与 machine video 段同序）：重拍中途失败花费也有账
               onSubmit: (jobId) => {
-                ctx.runs.appendEvent(runId, 'spend', { stage: 'video', model: videoModel, estCny: est, shot, jobId: jobId.slice(0, 80) })
+                ctx.runs.appendEvent(runId, 'spend', { stage: 'video', model: videoBinding.model, estCny: est, shot, jobId: jobId.slice(0, 80) })
+                ledger.recordSafe({ channel: channel.id, model: videoBinding.model, kind: 'video', estCny: est, jobId: jobId.slice(0, 80) })
               },
             })
           } catch (err) {
@@ -180,7 +191,7 @@ export function buildReviewTools(ctx: ReviewContext): {
               renameSync(backup, clip)
               throw err instanceof ModelUnavailableError
                 ? err
-                : modelUnavailableFrom(channel, 'video', videoModel, err instanceof Error ? err.message : String(err))
+                : bindingUnavailable(videoBinding, err instanceof Error ? err.message : String(err))
             }
             // 无条件回滚：saveUrl 中途失败可能留下半截新片，先删再复位旧片（备份恒存在——刚 rename 过来的）
             if (existsSync(clip)) rmSync(clip)

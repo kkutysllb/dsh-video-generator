@@ -57,6 +57,10 @@ export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: st
       '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
       out,
     ]
+    // MV 对点（规格 §6.5）：槽位短于源素材 → 修剪（长于则后续段 concat 自然衔接，不撑帧）
+    if (c.durationUs !== undefined && c.srcDurationUs !== undefined && c.srcDurationUs > c.durationUs * 1.01) {
+      args.splice(args.indexOf('-an'), 0, '-t', (c.durationUs / 1e6).toFixed(3))
+    }
     return { src: c.src, out, args }
   })
 
@@ -85,7 +89,9 @@ export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: st
     vLabel = 'vout'
   }
 
-  if (t.audio.length) {
+  // 配音总线（原 amix 语义不变，输出改名 voicebus 供 BGM ducking 引用）
+  const hasVoice = t.audio.length > 0
+  if (hasVoice) {
     const mixed: string[] = []
     t.audio.forEach((a, i) => {
       const idx = normalize.length + i
@@ -100,19 +106,44 @@ export function buildRenderPlan(t: Timeline, outPath: string, opts: { ffmpeg: st
       parts.push(`${chain}[na${i}]`)
       mixed.push(`[na${i}]`)
     })
-    parts.push(`${mixed.join('')}amix=inputs=${mixed.length}:duration=longest:normalize=0[aout]`)
+    parts.push(`${mixed.join('')}amix=inputs=${mixed.length}:duration=longest:normalize=0${t.music ? '[voicebus]' : '[aout]'}`)
+  }
+
+  // BGM 轨（规格 §6.3）：stream_loop 无限循环 → atrim 到成片总长 → 音量 → 首尾 0.5s 淡入淡出；
+  // 有配音时以 voicebus 作 sidechain 压音乐（ducking），无配音直出。
+  if (t.music) {
+    const idx = normalize.length + t.audio.length
+    const totalSecNum = t.totalDurationUs > 0 ? t.totalDurationUs / 1e6 : null
+    const vol = t.music.volume ?? 0.22
+    let mchain = `[${idx}:a]aresample=44100`
+    if (totalSecNum !== null) mchain += `,atrim=0:${totalSecNum.toFixed(3)}`
+    mchain += `,volume=${vol},afade=t=in:st=0:d=0.5`
+    if (totalSecNum !== null && totalSecNum > 1) mchain += `,afade=t=out:st=${(totalSecNum - 0.5).toFixed(3)}:d=0.5`
+    parts.push(`${mchain}[mbase]`)
+    if (hasVoice) {
+      parts.push(`[mbase][voicebus]sidechaincompress=threshold=0.03:ratio=8:attack=15:release=350[mduck]`)
+      parts.push(`[voicebus][mduck]amix=inputs=2:duration=first:normalize=0[aout]`)
+    } else {
+      parts.push(`[mbase]anull[aout]`)
+    }
   }
 
   const args: string[] = ['-y']
   for (const n of normalize) args.push('-i', n.out)
   for (const a of t.audio) args.push('-i', a.src)
+  if (t.music) {
+    // 无限循环源由 -t 与 atrim 双重收口
+    args.push('-stream_loop', '-1')
+  }
+  if (t.music) args.push('-i', t.music.src)
   args.push('-filter_complex', parts.join(';'))
   args.push('-map', `[${vLabel}]`)
-  if (t.audio.length) args.push('-map', '[aout]')
+  const hasAudioOut = hasVoice || !!t.music
+  if (hasAudioOut) args.push('-map', '[aout]')
   const totalUs = t.totalDurationUs
   if (totalUs > 0) args.push('-t', (totalUs / 1e6).toFixed(3))
   args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart')
-  if (t.audio.length) args.push('-c:a', 'aac', '-b:a', '160k')
+  if (hasAudioOut) args.push('-c:a', 'aac', '-b:a', '160k')
   args.push(outPath)
 
   return { normalize, composite: { args }, workDir: opts.workDir }

@@ -51,10 +51,18 @@ async function requestJson<T>(fetchImpl: FetchImpl, url: string, apiKey: string,
   }
 }
 
-export function postJson<T = Record<string, unknown>>(url: string, apiKey: string, body: unknown, fetchImpl: FetchImpl = fetch, timeoutMs = 120000): Promise<T> {
+export function postJson<T = Record<string, unknown>>(
+  url: string,
+  apiKey: string,
+  body: unknown,
+  fetchImpl: FetchImpl = fetch,
+  timeoutMs = 120000,
+  /** 可选附加头（如 DashScope 原生契约要求 X-DashScope-Async: enable，附录 B.4）。 */
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
   return requestJson<T>(fetchImpl, url, apiKey, {
     method: 'POST',
-    headers: { ...authHeaders(apiKey), 'content-type': 'application/json' },
+    headers: { ...authHeaders(apiKey), 'content-type': 'application/json', ...extraHeaders },
     body: JSON.stringify(body),
   }, timeoutMs)
 }

@@ -56,7 +56,7 @@ export function createDashscopeRelayProvider(ch: DashscopeChannel, fetchImpl: ty
       if (typeof spec['imageUrl'] === 'string') input['img_url'] = spec['imageUrl']
       const parameters: Record<string, unknown> = {}
       if (typeof spec['durationSec'] === 'number') parameters['duration'] = spec['durationSec']
-      const json = await postJson<TaskSubmitResponse>(`${base}${SYNTH_PATH}`, ch.apiKey, { model: ch.model, input, parameters }, fetchImpl, 60000)
+      const json = await postJson<TaskSubmitResponse>(`${base}${SYNTH_PATH}`, ch.apiKey, { model: ch.model, input, parameters }, fetchImpl, 60000, { 'X-DashScope-Async': 'enable' })
       const taskId = json.output?.task_id
       if (!taskId) throw new RelayError(500, `提交响应缺少 task_id: ${JSON.stringify(json).slice(0, 200)}`)
       return { jobId: taskId }

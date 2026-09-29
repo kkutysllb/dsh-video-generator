@@ -32,6 +32,7 @@ test('buildRenderPlan：两阶段命令（逐 clip 归一化 + concat/drawtext/a
     assert.ok(fc.includes('concat=n=2'))
     assert.ok(fc.includes("drawtext=text='第一句'"))
     assert.ok(fc.includes('amix'))
+    assert.ok(fc.includes('normalize=0[aout]'), '无 BGM 时配音总线即 [aout]（映射必须存在）')
     assert.ok(plan.composite.args.includes('-map'))
     const maps = plan.composite.args.filter((a) => a === '-map')
     assert.equal(maps.length, 2) // 视频 + 音频
@@ -106,5 +107,62 @@ test('renderTimeline 真实渲染 smoke：两段彩条 + 字幕 -> mp4（需本�
     assert.ok(dur !== null && dur > 1.8 && dur < 2.6)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/* ── P1：BGM 混音（循环补长 + ducking + 淡入淡出）────────── */
+
+test('buildRenderPlan：BGM 轨——stream_loop 循环源 + atrim 总长 + ducking + 淡入淡出', () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'vgen-test-'))
+  try {
+    const t = sampleTimeline()
+    t.addMusic('/bgm.mp3', undefined, 0.22)
+    const plan = buildRenderPlan(t, '/out/final.mp4', { ffmpeg: '/usr/bin/ffmpeg', workDir, subtitles: false })
+    const args = plan.composite.args
+    assert.deepEqual(args.slice(args.indexOf('-stream_loop'), args.indexOf('-stream_loop') + 2), ['-stream_loop', '-1'])
+    assert.ok(args.includes('/bgm.mp3'))
+    const fc = args[args.indexOf('-filter_complex') + 1] as string
+    assert.ok(fc.includes('sidechaincompress'), '有配音 → voicebus 作 sidechain 压 BGM（ducking）')
+    assert.ok(fc.includes('afade=t=in:st=0:d=0.5'), '首部淡入')
+    assert.ok(fc.includes('afade=t=out:st=5.000:d=0.5'), '尾部淡出（总长 5.5s）')
+    assert.ok(fc.includes('atrim=0:5.500'), 'BGM 裁到成片总长')
+    assert.ok(fc.includes('volume=0.22'), '默认垫底音量')
+    assert.ok(fc.includes('amix=inputs=2:duration=first:normalize=0[aout]'))
+    const maps = args.filter((a) => a === '-map')
+    assert.equal(maps.length, 2)
+  } finally {
+    rmSync(workDir, { recursive: true, force: true })
+  }
+})
+
+test('buildRenderPlan：无配音时 BGM 直出（无 ducking），缺省音量 0.22', () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'vgen-test-'))
+  try {
+    const t = new Timeline({ width: 1080, height: 1920, fps: 24 })
+    t.addClip('/a.mp4', 4_000_000)
+    t.addMusic('/bgm.mp3')
+    const plan = buildRenderPlan(t, '/out/final.mp4', { ffmpeg: '/usr/bin/ffmpeg', workDir, subtitles: false })
+    const fc = plan.composite.args[plan.composite.args.indexOf('-filter_complex') + 1] as string
+    assert.ok(!fc.includes('sidechaincompress'), '无人声无 ducking')
+    assert.ok(fc.includes('[mbase]anull[aout]'))
+    assert.ok(fc.includes('volume=0.22'))
+  } finally {
+    rmSync(workDir, { recursive: true, force: true })
+  }
+})
+
+test('buildRenderPlan：MV 修剪——槽位短于源素材 → normalize -t（只裁不撑）', () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'vgen-test-'))
+  try {
+    const t = new Timeline({ width: 1080, height: 1920, fps: 24 })
+    t.addClip('/a.mp4', 1_000_000, undefined, 4_000_000) // 槽 1s、源 4s → -t 1.0
+    t.addClip('/b.mp4', 1_000_000, undefined, 1_000_000) // 槽=源 → 不加 -t
+    const plan = buildRenderPlan(t, '/out/final.mp4', { ffmpeg: '/usr/bin/ffmpeg', workDir, subtitles: false })
+    const first = plan.normalize[0]!.args
+    assert.deepEqual(first.slice(first.indexOf('-t'), first.indexOf('-t') + 2), ['-t', '1.000'])
+    const second = plan.normalize[1]!.args
+    assert.ok(!second.includes('-t'), '槽=源不修剪')
+  } finally {
+    rmSync(workDir, { recursive: true, force: true })
   }
 })

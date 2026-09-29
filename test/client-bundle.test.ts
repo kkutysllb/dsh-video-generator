@@ -86,50 +86,109 @@ test('apply：无 document 环境（node）不炸——样式/导航图标注入
   assert.doesNotThrow(() => (mod['apply'] as (c: unknown) => void)(ctx))
 })
 
-test('bundle 渲染冒烟：settings 与漫剧工坊主面板首帧渲染不抛错', () => {
-  const { mod } = loadBundle()
-  const components: Array<unknown> = []
-  const ctx = {
-    slots: {
-      inject: (_type: string, loader: () => unknown) => { loader(); return () => {} },
-      register: (_opts: unknown, comp: unknown) => { components.push(comp); return () => {} },
-    },
-    locale: { register: () => () => {}, bind: () => (k: string, params?: Record<string, unknown>) => (params ? k : k) },
-    effect: (fn: () => () => void) => { fn(); return () => {} },
-    sessions: {},
-    layout: {},
-  }
-  ;(mod['apply'] as (c: unknown) => void)(ctx)
-  assert.ok(components.length >= 2, '应注册 settings 与 main 两个面板组件')
-  // 极简 React stub：createElement 造元素树、hooks 返回惰性初值。
-  // 首帧渲染只走 loading/空态分支，可捕获引用错误/hooks 顺序错误等低级缺陷。
-  const reactStub = {
-    createElement: function (type: unknown, props: unknown) {
-      const kids = Array.prototype.slice.call(arguments, 2) as unknown[]
-      return { type, props, kids: kids.flat() }
+test('bundle 渲染冒烟：递归执行组件体——空数据与完整数据两帧零抛错（白屏回归网）', () => {
+  // 背景：SlotRow 曾在草稿未初始化时读 draft.caps.* 抛 TypeError，真实 React 直接卸载
+  // 整棵设置树（白屏），而 createElement 打桩的旧冒烟从不执行组件体，漏检。本用例以
+  // 「createElement 递归调用函数组件」的方式真实执行组件体，并渲染两帧：
+  //   ①空数据首帧；②slots/模板/通道数据齐备的帧。任何抛错即失败。
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  const specRef: { current: { id: string; factory: (req: (m: string) => unknown) => Record<string, unknown> } | null } = { current: null }
+  const stubWindow = { __ModuleLoader__: { load(spec: { id: string; factory: (req: (m: string) => unknown) => Record<string, unknown> }) { specRef.current = spec } } }
+  Reflect.set(globalThis, 'window', stubWindow)
+  try { new Function(code)() } finally { Reflect.deleteProperty(globalThis, 'window') }
+  const spec = specRef.current!
+  const throws: string[] = []
+  const React = {
+    createElement: (type: unknown, props: Record<string, unknown> | null, ...kids: unknown[]) => {
+      if (typeof type === 'function') {
+        try {
+          return (type as (p: Record<string, unknown>) => unknown)({ ...(props || {}), children: kids.length === 1 ? kids[0] : kids })
+        } catch (e) {
+          throws.push(`${(type as { name?: string }).name || 'anon'}: ${e instanceof Error ? e.message : String(e)}`)
+          return null
+        }
+      }
+      return { type, props, kids }
     },
     useState: (v: unknown) => [v, () => {}],
     useEffect: () => {},
     useCallback: (f: unknown) => f,
     useRef: () => ({ current: null }),
   }
-  for (const comp of components) {
-    assert.doesNotThrow(() => {
-      ;(comp as () => unknown)()
-    }, '面板组件首帧渲染抛错')
+  const mod = spec.factory((m: string) => (m === 'react' ? React : () => { throw new Error(`require ${m}`) }))
+  let settingsComp: ((p: Record<string, unknown>) => unknown) | null = null
+  let panelComp: ((p: Record<string, unknown>) => unknown) | null = null
+  const ctx = {
+    slots: {
+      inject: (_t: string, loader: () => unknown) => { loader(); return () => {} },
+      register: (o: { name?: string }, comp?: (p: Record<string, unknown>) => unknown) => {
+        if (o.name === 'settings.section') settingsComp = comp ?? null
+        if (o.name === 'main') panelComp = comp ?? null
+        return () => {}
+      },
+    },
+    locale: { register: () => () => {}, bind: () => (k: string) => k },
+    effect: (fn: () => () => void) => { fn(); return () => {} },
+    get: () => null,
   }
-  void reactStub
+  ;(mod['apply'] as (c: unknown) => void)(ctx)
+  const sc = settingsComp as ((p: Record<string, unknown>) => unknown) | null
+  const pc = panelComp as ((p: Record<string, unknown>) => unknown) | null
+  assert.ok(sc && pc, 'settings.section 与 main 组件均应注册')
+
+  // 帧一：空数据（未配置通道/槽位/诊断）
+  const empty = { get: () => null }
+  sc(empty)
+  pc(empty)
+  // 帧二：宿主返回完整数据（slots.list / musicTemplates.list / channels.list / diagnostics 形态）
+  const populated = {
+    ...empty,
+    chans: { channels: [{ id: 'c1', label: '主站', baseUrl: 'https://x.example', apiKeyMasked: 'sk-••••5678', enabled: true, protocols: ['openai-images'] }] },
+    probe: { c1: { busy: false, ok: true, message: '探测成功：枚举到 2 个模型' } },
+    diags: { version: '3.0.0-dev', ffmpeg: { path: 'ffmpeg', version: 'v', drawtext: true }, tts: { available: false, hint: '未绑定' }, runsRoot: '/tmp/runs', projectsRoots: [] },
+    slotsData: {
+      slots: [{
+        slot: 'video', channelId: 'c1', model: 'vid-model', protocol: 'dashscope-video',
+        capabilities: { imageToVideo: true, textToVideo: false, maxDurationSec: 10 },
+        verifiedAt: '2026-09-28T00:00:00.000Z', verifyNote: 'ok: video ok',
+      }],
+      slotMeta: {
+        'image.master': { slot: 'image.master', kind: 'image', label: '主图', purpose: '角色三视图与场景主图', required: true, consumer: 'master-asset 段' },
+        video: { slot: 'video', kind: 'video', label: '视频', purpose: '逐镜视频', required: true, consumer: 'video 段' },
+      },
+    },
+    templates: [{ id: 'builtin/sync-audio-url', label: '同步 · 直返音频 URL', source: 'builtin', fields: { endpoint: { path: '/x' }, mode: 'sync', request: { promptField: 'prompt' }, response: { audioPath: 'data.url' } } }],
+    slotDrafts: {
+      'image.master': { channelId: '', model: '', protocol: 'openai-images', caps: { sizeParam: true }, mappingText: '' },
+      video: { channelId: 'c1', model: 'vid-model', protocol: 'dashscope-video', caps: { imageToVideo: true, textToVideo: false, maxDurationSec: 10 }, mappingText: '' },
+    },
+    slotMsg: { video: { busy: false, ok: true, text: '测试通过' } },
+    form: { id: '', label: '', baseUrl: '', apiKey: '' },
+    budgetDraft: { threshold: 1, gates: {} },
+    message: '', error: '',
+  }
+  sc(populated)
+  pc(populated)
+  assert.deepEqual(throws, [], '组件体零抛错（含空数据帧与完整数据帧）')
 })
 
-test('bundle：模型行支持草稿移除、保存空列表，且不保留未勾选旧模型', () => {
+test('bundle：用途槽设置面——六槽、每槽单绑定保存与真实测试按钮', () => {
   const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
-  assert.match(code, /pickerRemove/)
-  assert.match(code, /aria-label/)
-  assert.match(code, /title:/)
-  assert.match(code, /props\.onChange\(Object\.assign\(\{\}, picker, \{ rows:/)
-  assert.match(code, /patch: \{ models: submitted \}/)
-  assert.doesNotMatch(code, /未勾选但已配置/)
-  assert.doesNotMatch(code, /checked\.size === 0/)
+  // 六槽顺序表与固定协议映射（image/tts/music 固定协议；video 三族可选）
+  assert.match(code, /SLOT_ORDER = \["image\.master", "image\.shot", "video", "tts", "music\.bgm", "music\.song"\]/)
+  assert.match(code, /"music\.bgm": "generic-music"/)
+  assert.match(code, /generic-music/)
+  // 保存走 slots.set（含 capabilities / music 映射），测试走 slots.test（真实小额调用）
+  assert.match(code, /api\("slots\.set"/)
+  assert.match(code, /api\("slots\.test", \{ slot: slot \}/)
+  assert.match(code, /capabilities: capsPayload\(slot, draft\)/)
+  // 音乐槽：模板套用 + JSON 映射编辑
+  assert.match(code, /musicTemplates\.save/)
+  assert.match(code, /musicTemplates\.list/)
+  assert.match(code, /slotInvalidJson/)
+  // 默认通道交互已退役
+  assert.doesNotMatch(code, /channels\.setDefault/)
+  assert.doesNotMatch(code, /onSetDefault/)
 })
 
 test('bundle：漫剧工坊契约——PANEL_ID、drama RPC 面、提案闭环与轮询门控关键串', () => {
@@ -173,32 +232,20 @@ test('bundle：漫剧工坊双语词典键齐备（zh/en 同步）', () => {
   assert.ok(code.includes('navigator.clipboard.writeText'), '剪贴板兜底路径丢失')
 })
 
-test('apply：locale 字典含 picker 全套键（zh/en 同步）', () => {
-  const { mod } = loadBundle()
-  let dictRef: { current: { zh: Record<string, string>; en: Record<string, string> } | null } = { current: null }
-  const ctx = {
-    slots: { inject: () => () => {}, register: () => () => {} },
-    locale: {
-      register: (_n: string, d: { zh: Record<string, string>; en: Record<string, string> }) => { dictRef.current = d; return () => {} },
-      bind: () => (k: string) => k,
-    },
-    effect: (fn: () => () => void) => { fn(); return () => {} },
+test('apply：locale 字典含用途槽全套键（zh/en 同步，picker 键已退役）', () => {
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  for (const key of [
+    'slotsTitle', 'slotsIntro', 'slotChannel', 'slotModel', 'slotCaps', 'slotProtocol',
+    'slotTest', 'slotTesting', 'slotSave', 'slotUnbound', 'slotVoice', 'slotInstructions',
+    'slotMaxDur', 'slotMapping', 'slotTpl', 'slotTplSaveAs', 'slotTplSavePrompt',
+    'slotInvalidJson', 'slotTestOk', 'slotTestFail', 'slotSavedOk', 'slotNeedChannel',
+  ]) {
+    const hits = code.split(`${key}: "`).length - 1
+    assert.ok(hits >= 2, `词典键 ${key} 须 zh/en 双语齐备（现 ${hits} 处）`)
   }
-  ;(mod['apply'] as (c: unknown) => void)(ctx)
-  const dict = dictRef.current
-  assert.ok(dict, 'locale.register 未被调用')
-  const required = [
-    'pickerSearch', 'pickerFilterKind', 'pickerFilterAll',
-    'pickerSelectAll', 'pickerDeselectAll', 'pickerSave',
-    'pickerEmpty', 'pickerLabelConfigured', 'pickerLabelNew',
-    'pickerKindImage', 'pickerKindVideo', 'pickerKindTts', 'pickerSaved', 'pickerRemove',
-    'pickerTitle', 'pickerCountUnit', 'pickerCheckedHintPrefix',
-    'pickerStatCheckedPrefix', 'pickerStatRemovedPrefix',
-  ]
-  for (const k of required) {
-    // 注：允许空字符串（en.pickerCountUnit = '' 是合法设计——英文复数不分单复）
-    assert.ok(typeof dict!.zh[k] === 'string', `locale.zh.${k} 缺失`)
-    assert.ok(typeof dict!.en[k] === 'string', `locale.en.${k} 缺失`)
+  // picker 时代词典键不复存在
+  for (const dead of ['pickerSearch', 'pickerSave:', 'pickerSaved', 'adopt:']) {
+    assert.ok(!code.includes(dead), `退役词典键 ${dead} 不应存在`)
   }
 })
 
@@ -427,4 +474,12 @@ test('bundle：0.1.7 会话桥 v4 契约哨兵——关键串齐备、旧面只�
   assert.ok(code.includes('ctx.get("uiWorkspace")'), 'uiWorkspace 必须走 ctx.get 软探测（可选面不得直读）')
   // 0.1.7 已删字段：不再把 getSnapshot().current 当唯一判据
   assert.doesNotMatch(code, /getSnapshot\(\)\.current/)
+})
+
+test('bundle：music 段接线——阶段 chip / gate 下拉 / BGM 产物播放器', () => {
+  const code = readFileSync(join(import.meta.dirname, '..', 'lib', 'client.js'), 'utf8')
+  assert.match(code, /var STAGES = \["story", "script", "storyboard", "master-asset", "shot-assets", "video", "music", "final-cut"\]/)
+  assert.match(code, /var MEDIA_STAGES = \["master-asset", "shot-assets", "video", "music", "final-cut"\]/)
+  assert.match(code, /artifacts\.music \|\| \[\]/)
+  assert.match(code, /React\.createElement\("audio"/)
 })

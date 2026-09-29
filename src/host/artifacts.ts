@@ -17,6 +17,7 @@ export interface RunArtifacts {
   shots: ArtifactFile[]
   clips: ArtifactFile[]
   review: ArtifactFile[]
+  music: ArtifactFile[]
   final: { mp4: ArtifactFile | null; srt: ArtifactFile | null }
 }
 
@@ -73,6 +74,7 @@ export function collectArtifacts(runs: RunStore, runId: string): RunArtifacts {
     shots: listDir(runDir, 'shots', 'shots'),
     clips: listDir(runDir, 'clips', 'clips'),
     review: listTree(runDir, 'review', 'review'),
+    music: listDir(runDir, 'music', 'music'),
     final: { mp4: finalFile(runDir, 'final.mp4'), srt: finalFile(runDir, 'final.srt') },
   }
 }

@@ -54,26 +54,27 @@ test('healthPayload 汇报版本与通道计数（不含任何明文）', () => 
   }
 })
 
-test('handleApi：channels.create/list/update/delete/setDefault + settings', () => {
+test('handleApi：channels.create/list/update/delete（无 models，protocols 进出）+ settings 形状', () => {
   const c = ctx()
   try {
-    const created = handleApi(c.api, 'channels.create', { id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
+    const created = handleApi(c.api, 'channels.create', { id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678', protocols: ['openai-images', 'openai-video'] })
     assert.equal((created as { ok: boolean }).ok, true)
     assert.ok(!JSON.stringify(created).includes('sk-vgen-12345678'))
 
-    const list = handleApi(c.api, 'channels.list', {}) as { ok: boolean; value: { channels: unknown[] } }
+    const list = handleApi(c.api, 'channels.list', {}) as { ok: boolean; value: { channels: Array<Record<string, unknown>> } }
     assert.equal(list.ok, true)
     assert.equal(list.value.channels.length, 1)
+    assert.ok(!('defaultChannelId' in list.value), 'list 只返回 {channels}')
+    assert.deepEqual(list.value.channels[0]!['protocols'], ['openai-images', 'openai-video'])
 
-    const upd = handleApi(c.api, 'channels.update', { id: 've', patch: { label: '向量引擎' } }) as { ok: boolean }
+    const upd = handleApi(c.api, 'channels.update', { id: 've', patch: { label: '向量引擎', protocols: ['dashscope-video'] } }) as { ok: boolean }
     assert.equal(upd.ok, true)
+    assert.deepEqual(c.vault.getChannel('ve')?.protocols, ['dashscope-video'])
 
-    const def = handleApi(c.api, 'channels.setDefault', { id: 've' }) as { ok: boolean }
-    assert.equal(def.ok, true)
-
-    const settings = handleApi(c.api, 'settings.get', {}) as { value: { defaultChannelId: string; budget: { confirmThresholdCny: number } } }
-    assert.equal(settings.value.defaultChannelId, 've')
+    const settings = handleApi(c.api, 'settings.get', {}) as { value: Record<string, unknown> & { budget: { confirmThresholdCny: number }; gateDefaults: Record<string, string> } }
     assert.equal(settings.value.budget.confirmThresholdCny, 1)
+    assert.deepEqual(settings.value.gateDefaults, {})
+    assert.ok(!('defaultChannelId' in settings.value), 'settings.get 不再有 defaultChannelId')
 
     handleApi(c.api, 'settings.update', { confirmThresholdCny: 3 })
     assert.equal(c.vault.getBudget().confirmThresholdCny, 3)
@@ -100,7 +101,24 @@ test('handleApi：VaultError 映射为 ok:false 信封；未知方法报 unknown
   }
 })
 
-test('channels.test 返回探测信封（异步包装）', async () => {
+// 哨兵：已移除的模型池表面必须保持移除（防止回流）
+test('移除面哨兵：channels.adoptModels / channels.setDefault → bad-request unknown-method', () => {
+  const c = ctx()
+  try {
+    const adopt = handleApi(c.api, 'channels.adoptModels', { id: 've', models: ['m1'] }) as { ok: false; error: { code: string; message: string } }
+    assert.equal(adopt.ok, false)
+    assert.equal(adopt.error.code, 'bad-request')
+    assert.match(adopt.error.message, /unknown-method/)
+    const setDefault = handleApi(c.api, 'channels.setDefault', { id: 've' }) as { ok: false; error: { code: string; message: string } }
+    assert.equal(setDefault.ok, false)
+    assert.equal(setDefault.error.code, 'bad-request')
+    assert.match(setDefault.error.message, /unknown-method/)
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('channels.test 返回探测信封并写回通道 verifiedAt 留痕', async () => {
   const c = ctx()
   try {
     c.vault.createChannel({ id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
@@ -109,6 +127,8 @@ test('channels.test 返回探测信封（异步包装）', async () => {
     assert.equal((res as { ok: boolean }).ok, true)
     const value = (res as { value: { probe: { models: string[] } } }).value
     assert.deepEqual(value.probe.models, ['m1'])
+    assert.equal(typeof c.vault.getChannel('ve')?.verifiedAt, 'string')
+    assert.match(c.vault.getChannel('ve')?.verifyNote ?? '', /probe ok/)
   } finally {
     rmSync(c.dir, { recursive: true, force: true })
   }
@@ -137,7 +157,7 @@ test('runs.list 通过 handleApi 可用', () => {
   }
 })
 
-test('channels.create 重复 id -> conflict 信封；响应含 apiKeyMasked', async () => {
+test('channels.create 重复 id -> conflict 信封；响应含 apiKeyMasked', () => {
   const c = ctx()
   try {
     handleApi(c.api, 'channels.create', { id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
@@ -168,6 +188,18 @@ test('宽进收窄：apiKey 对象/enabled 字符串/threshold null', () => {
   }
 })
 
+test('channels.update patch.protocols：非数组不更新（严格类型边界）', () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678', protocols: ['openai-images'] })
+    const upd = handleApi(c.api, 'channels.update', { id: 've', patch: { protocols: 'openai-video' } }) as { ok: boolean }
+    assert.equal(upd.ok, true)
+    assert.deepEqual(c.vault.getChannel('ve')?.protocols, ['openai-images'])
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
 test('probe reject -> internal 泛化信封（不泄漏细节）', async () => {
   const c = ctx()
   try {
@@ -182,7 +214,7 @@ test('probe reject -> internal 泛化信封（不泄漏细节）', async () => {
   }
 })
 
-test('probe ok:false -> 信封 ok:true 但 value.probe.ok false（契约注释钉住）', async () => {
+test('probe ok:false -> 信封 ok:true 但 value.probe.ok false，verifiedAt 仍留痕（契约注释钉住）', async () => {
   const c = ctx()
   try {
     c.vault.createChannel({ id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
@@ -192,6 +224,8 @@ test('probe ok:false -> 信封 ok:true 但 value.probe.ok false（契约注释�
     assert.equal((res as { ok: boolean }).ok, true)
     assert.equal(value.probe.ok, false)
     assert.equal(value.probe.error, 'auth-failed')
+    assert.equal(typeof c.vault.getChannel('ve')?.verifiedAt, 'string')
+    assert.match(c.vault.getChannel('ve')?.verifyNote ?? '', /probe auth-failed/)
   } finally {
     rmSync(c.dir, { recursive: true, force: true })
   }
@@ -231,46 +265,6 @@ test('M4: runs.get 返回 record+artifacts+spend 聚合；未知 id → not-foun
   }
 })
 
-test('M4: channels.adoptModels 用内置目录推断 kind 并合并去重', () => {
-  const c = ctx()
-  try {
-    c.vault.createChannel({ id: 'adopt-a', baseUrl: 'https://api.example.com', apiKey: 'sk-1234567890ab', models: [{ model: 'gpt-x', kind: 'image' }] })
-    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-a', models: ['happyhorse-1.1-i2v', 'seedream-4.0'] }) as { ok: true; value: { models: Array<{ model: string; kind: string }> } }
-    assert.equal(env.ok, true)
-    const kinds = Object.fromEntries(env.value.models.map((m) => [m.model, m.kind]))
-    assert.equal(kinds['happyhorse-1.1-i2v'], 'video')
-    assert.equal(kinds['seedream-4.0'], 'image')
-    assert.equal(kinds['gpt-x'], 'image') // 未重报的既有模型原样保留
-    assert.equal(env.value.models.length, 3) // 合并去重
-  } finally {
-    rmSync(c.dir, { recursive: true, force: true })
-  }
-})
-
-test('M4: channels.adoptModels 重报目录不认识的名字不刷掉既有 kind（unknown 缺省 video 盲覆盖回归）', () => {
-  const c = ctx()
-  try {
-    c.vault.createChannel({ id: 'adopt-u', baseUrl: 'https://api.example.com', apiKey: 'sk-1234567890ab', models: [{ model: 'gpt-x', kind: 'image' }] })
-    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-u', models: ['gpt-x'] }) as { ok: true; value: { models: Array<{ model: string; kind: string }> } }
-    assert.equal(env.ok, true)
-    assert.equal(env.value.models.length, 1)
-    assert.equal(env.value.models[0]?.kind, 'image') // 修复前会被 unknownEntry() 刷成 'video'
-  } finally {
-    rmSync(c.dir, { recursive: true, force: true })
-  }
-})
-
-test('M4: channels.adoptModels 响应不含明文 key', () => {
-  const c = ctx()
-  try {
-    handleApi(c.api, 'channels.create', { id: 'adopt-b', baseUrl: 'https://api.example.com', apiKey: 'sk-secret-abcdef999' })
-    const env = handleApi(c.api, 'channels.adoptModels', { id: 'adopt-b', models: ['wan2.5-i2v'] })
-    assert.ok(!JSON.stringify(env).includes('sk-secret-abcdef999'))
-  } finally {
-    rmSync(c.dir, { recursive: true, force: true })
-  }
-})
-
 test('M4: settings.update gateDefaults 校验段名与模式', () => {
   const c = ctx()
   try {
@@ -305,29 +299,124 @@ test('M4: resolveMediaPath 拒绝穿越/绝对路径/空段/非法 runId', () =>
   assert.equal(resolveMediaPath('/runs-root', '/media/run-1/sub/../shot.png'), null)
 })
 
-
-
-test('channels.update 保存 models: [] 后真正删除未提交模型', () => {
-  const c = ctx()
-  try {
-    handleApi(c.api, 'channels.create', {
-      id: 'models-empty',
-      baseUrl: 'https://api.example.com/v1',
-      apiKey: 'sk-vgen-12345678',
-      models: [{ model: 'configured-image', kind: 'image' }, { model: 'configured-video', kind: 'video' }],
-    })
-    const updated = handleApi(c.api, 'channels.update', { id: 'models-empty', patch: { models: [] } }) as { ok: boolean; value?: { models: unknown[] } }
-    assert.equal(updated.ok, true)
-    assert.deepEqual(c.vault.getChannel('models-empty')?.models, [])
-    assert.deepEqual((updated.value?.models ?? []), [])
-  } finally {
-    rmSync(c.dir, { recursive: true, force: true })
-  }
-})
-
 test('M4: mediaContentType 映射 + 缺省 octet-stream', () => {
   assert.equal(mediaContentType('a.png'), 'image/png')
   assert.equal(mediaContentType('a.MP4'), 'video/mp4')
   assert.equal(mediaContentType('a.srt'), 'text/plain; charset=utf-8')
   assert.equal(mediaContentType('a.bin'), 'application/octet-stream')
+})
+
+/* ── 用途槽 slots.*（use-slots 新 API 面）── */
+
+test('slots.*：绑定 happy path（能力位缺省显式落库）、get、能力位合并、clear 幂等、list 带 slotMeta', () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
+    const set = handleApi(c.api, 'slots.set', { slot: 'video', channelId: 've', model: 'vid-model', protocol: 'dashscope-video' }) as { ok: boolean; value: { binding: Record<string, unknown> } }
+    assert.equal(set.ok, true)
+    assert.equal(set.value.binding.slot, 'video')
+    assert.equal(set.value.binding.channelId, 've')
+    assert.equal(set.value.binding.model, 'vid-model')
+    assert.deepEqual(set.value.binding.capabilities, { imageToVideo: true, textToVideo: false, maxDurationSec: 10 })
+
+    const get = handleApi(c.api, 'slots.get', { slot: 'video' }) as { ok: boolean; value: { binding: { model: string } | null } }
+    assert.equal(get.ok, true)
+    assert.equal(get.value.binding?.model, 'vid-model')
+
+    const list = handleApi(c.api, 'slots.list', {}) as { ok: boolean; value: { slots: unknown[]; slotMeta: Record<string, unknown> } }
+    assert.equal(list.ok, true)
+    assert.equal(list.value.slots.length, 1)
+    assert.equal(Object.keys(list.value.slotMeta).length, 6)
+
+    // 显式能力位与缺省合并落库
+    const set2 = handleApi(c.api, 'slots.set', { slot: 'video', channelId: 've', model: 'vid-model', protocol: 'dashscope-video', capabilities: { textToVideo: true } }) as { ok: boolean; value: { binding: { capabilities: Record<string, unknown> } } }
+    assert.equal(set2.ok, true)
+    assert.deepEqual(set2.value.binding.capabilities, { imageToVideo: true, textToVideo: true, maxDurationSec: 10 })
+
+    const clear1 = handleApi(c.api, 'slots.clear', { slot: 'video' }) as { ok: boolean; value: { cleared: boolean } }
+    assert.equal(clear1.ok, true)
+    assert.equal(clear1.value.cleared, true)
+    const clear2 = handleApi(c.api, 'slots.clear', { slot: 'video' }) as { ok: boolean; value: { cleared: boolean } }
+    assert.equal(clear2.ok, true)
+    assert.equal(clear2.value.cleared, false) // 幂等：未绑定再清 → cleared:false
+    assert.equal(c.vault.getSlotBinding('video'), null)
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+test('slots.* 错误面：未知通道 not-found；坏协议/非法槽位/未绑定槽 test → bad-request', () => {
+  const c = ctx()
+  try {
+    c.vault.createChannel({ id: 've', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-vgen-12345678' })
+    const noChannel = handleApi(c.api, 'slots.set', { slot: 'video', channelId: 'ghost', model: 'm', protocol: 'dashscope-video' }) as { ok: false; error: { code: string } }
+    assert.equal(noChannel.ok, false)
+    assert.equal(noChannel.error.code, 'not-found')
+
+    const badProto = handleApi(c.api, 'slots.set', { slot: 'video', channelId: 've', model: 'm', protocol: 'nope' }) as { ok: false; error: { code: string } }
+    assert.equal(badProto.ok, false)
+    assert.equal(badProto.error.code, 'bad-request')
+
+    const badSlot = handleApi(c.api, 'slots.get', { slot: 'teleport' }) as { ok: false; error: { code: string; message: string } }
+    assert.equal(badSlot.ok, false)
+    assert.equal(badSlot.error.code, 'bad-request')
+
+    // 未绑定槽不可 test（注意：绑定槽的 slots.test 是真实网络调用，勿在离线测试触达）
+    const testUnbound = handleApi(c.api, 'slots.test', { slot: 'video' }) as { ok: false; error: { code: string; message: string } }
+    assert.equal(testUnbound.ok, false)
+    assert.equal(testUnbound.error.code, 'bad-request')
+    assert.match(testUnbound.error.message, /槽位未绑定/)
+
+    const testBadName = handleApi(c.api, 'slots.test', { slot: 'nope' }) as { ok: false; error: { code: string; message: string } }
+    assert.equal(testBadName.ok, false)
+    assert.equal(testBadName.error.code, 'bad-request')
+    assert.match(testBadName.error.message, /image\.master/)
+    assert.match(testBadName.error.message, /music\.song/)
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
+})
+
+/* ── 通用音乐映射模板 ── */
+
+test('musicTemplates.*：内置 4 条（builtin 随版本提供）；用户模板落库/删除后还原', () => {
+  const c = ctx()
+  try {
+    const list0 = handleApi(c.api, 'musicTemplates.list', {}) as { ok: boolean; value: { templates: Array<{ id: string; source: string }> } }
+    assert.equal(list0.ok, true)
+    assert.equal(list0.value.templates.length, 4)
+    assert.ok(list0.value.templates.every((t) => t.source === 'builtin'))
+
+    const saved = handleApi(c.api, 'musicTemplates.save', {
+      label: '我的站点',
+      fields: {
+        endpoint: { path: '/x', statusPath: '/x/{id}' },
+        mode: 'async',
+        request: { promptField: 'prompt' },
+        response: { audioPath: 'data.url', jobIdPath: 'data.id' },
+      },
+    }) as { ok: boolean; value: { template: { id: string; source: string; label: string; fields: { mode: string; response: Record<string, unknown>; endpoint: Record<string, unknown> } } } }
+    assert.equal(saved.ok, true)
+    assert.match(saved.value.template.id, /^tpl-/)
+    assert.equal(saved.value.template.source, 'user')
+    assert.equal(saved.value.template.label, '我的站点')
+    assert.equal(saved.value.template.fields.mode, 'async')
+    assert.equal(saved.value.template.fields.response['jobIdPath'], 'data.id')
+    assert.equal(saved.value.template.fields.endpoint['statusPath'], '/x/{id}')
+
+    const list1 = handleApi(c.api, 'musicTemplates.list', {}) as { value: { templates: unknown[] } }
+    assert.equal(list1.value.templates.length, 5)
+
+    const del = handleApi(c.api, 'musicTemplates.delete', { id: saved.value.template.id }) as { ok: boolean; value: { deleted: string } }
+    assert.equal(del.ok, true)
+    assert.equal(del.value.deleted, saved.value.template.id)
+    const list2 = handleApi(c.api, 'musicTemplates.list', {}) as { value: { templates: unknown[] } }
+    assert.equal(list2.value.templates.length, 4)
+
+    const miss = handleApi(c.api, 'musicTemplates.delete', { id: 'tpl-nope' }) as { ok: false; error: { code: string } }
+    assert.equal(miss.ok, false)
+    assert.equal(miss.error.code, 'not-found')
+  } finally {
+    rmSync(c.dir, { recursive: true, force: true })
+  }
 })

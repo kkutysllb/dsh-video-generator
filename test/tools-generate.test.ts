@@ -3,15 +3,15 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildGenerateTools, configuredCloudTts } from '../src/tools/generate.ts'
+import { buildGenerateTools, configuredCloudTts, generateToolDefs } from '../src/tools/generate.ts'
+import type { MachineDeps } from '../src/pipeline/machine.ts'
 import { VaultStore } from '../src/store/vault.ts'
+import type { SlotBinding, SlotId } from '../src/store/slots.ts'
 import { RunStore } from '../src/store/runs.ts'
 import { STORY, SCRIPT, SHOTS } from './schema-fixtures.ts'
 
-const FAKE_PRICING = new Map([
-  ['doubao-seedream-4-0-250828', { model_name: 'doubao-seedream-4-0-250828', model_type: '图像', quota_type: 1, model_ratio: 0, model_price: 0.2 }],
-  ['happyhorse-1.1-i2v', { model_name: 'happyhorse-1.1-i2v', model_type: '音视频', quota_type: 1, model_ratio: 0, model_price: 0.013 }],
-])
+/** 不可达 host：价目拉取必失败 → est 恒 null（估价未知 → 一律走确认语义，规格 §4.4）。 */
+const UNREACHABLE = 'https://mock.invalid'
 
 function fakeImageProvider(url: string) {
   return {
@@ -26,9 +26,9 @@ function fakeImageProvider(url: string) {
 
 function fakeVideoProvider() {
   return {
-    id: 'fake-video', capabilities: { imageToVideo: true, qualityTier: 5 },
+    id: 'fake-video', capabilities: { imageToVideo: true, textToVideo: true, qualityTier: 5 },
     quote: async () => ({ qualityTier: 5, costEstimate: 0.013, currency: 'CNY' }),
-    submit: async (_s: string, spec: Record<string, unknown>) => ({ jobId: `task-${String(spec['imageUrl']).slice(-6)}` }),
+    submit: async (_stage: string, spec: Record<string, unknown>) => ({ jobId: `task-${String(spec['imageUrl'] ?? 't2v').slice(-6)}` }),
     status: async () => ({ state: 'done' as const, progress: 100 }),
     fetch: async (jobId: string) => ({ outputs: [`https://oss.example/${jobId}.mp4`] }),
     health: async () => ({ ok: true }),
@@ -37,18 +37,26 @@ function fakeVideoProvider() {
 
 const fetchFake = (async (url: unknown) => new Response(Buffer.from(`bytes-of-${String(url).slice(-8)}`), { status: 200 })) as unknown as typeof fetch
 
-const DEFAULT_MODELS = [
-  { model: 'configured-image', kind: 'image' as const },
-  { model: 'configured-video', kind: 'video' as const },
-  { model: 'configured-tts-first', kind: 'tts' as const },
-  { model: 'configured-tts-second', kind: 'tts' as const },
-]
+/** vault 槽位表 → GenerateContext.slots 的映射形态（与宿主 index.ts 的接线一致）。 */
+function slotsRecord(vault: VaultStore): Partial<Record<SlotId, SlotBinding>> {
+  const out: Partial<Record<SlotId, SlotBinding>> = {}
+  for (const b of vault.listSlotBindings()) out[b.slot] = b
+  return out
+}
 
-function setup(opts: { confirmer?: (est: number | null) => Promise<boolean>; models?: typeof DEFAULT_MODELS } = {}) {
+function bindImageSlots(vault: VaultStore): void {
+  vault.setSlotBinding({ slot: 'image.master', channelId: 've', model: 'img-model', protocol: 'openai-images' })
+  vault.setSlotBinding({ slot: 'image.shot', channelId: 've', model: 'shot-model', protocol: 'openai-images' })
+}
+
+function setup(opts: {
+  confirmer?: (est: number | null) => Promise<boolean>
+  /** 覆盖槽位表（缺省从 vault 现取；传 () => ({}) 模拟全部未绑定）。 */
+  slots?: () => Partial<Record<SlotId, SlotBinding>>
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'vgen-gen-tools-'))
   const vault = VaultStore.open({ file: join(dir, 'vault.json') })
-  vault.createChannel({ id: 've', baseUrl: 'https://x.example', apiKey: 'sk-vgen-12345678', models: opts.models ?? DEFAULT_MODELS })
-  vault.setDefaultChannel('ve')
+  vault.createChannel({ id: 've', baseUrl: UNREACHABLE, apiKey: 'sk-vgen-12345678', protocols: ['openai-images', 'openai-video', 'openai-tts'] })
   const runs = RunStore.open({ rootDir: join(dir, 'runs') })
   const run = runs.create('三镜漫剧')
   runs.setStage(run.id, 'story', 'done')
@@ -59,23 +67,30 @@ function setup(opts: { confirmer?: (est: number | null) => Promise<boolean>; mod
   writeFileSync(join(rd, 'script.json'), JSON.stringify(SCRIPT))
   writeFileSync(join(rd, 'storyboard.json'), JSON.stringify({ ...SHOTS, characters: SCRIPT.characters, scenes: SCRIPT.scenes }))
   const env = { DSH_HOME: dir, VGEN_FFMPEG: '' } as unknown as NodeJS.ProcessEnv
+  // 记录 forSlot 收到的每次绑定：模型/协议必须来自槽位绑定（单槽单模型，无候选轮询）
+  const seen: Array<{ slot: SlotId; model: string; protocol: string }> = []
+  const forSlot: MachineDeps['providers']['forSlot'] = (binding, channel, o) => {
+    seen.push({ slot: binding.slot, model: binding.model, protocol: binding.protocol })
+    void channel
+    void o
+    return binding.slot === 'video'
+      ? fakeVideoProvider()
+      : fakeImageProvider(`https://img.example/${binding.model.replace(/\W/g, '-')}.png`)
+  }
   const tools = buildGenerateTools({
     vault, runs,
-    channel: () => {
-      const current = vault.getChannel('ve')!
-      return { id: current.id, label: current.label, baseUrl: current.baseUrl, apiKey: current.apiKey, models: current.models }
+    slots: opts.slots ?? (() => slotsRecord(vault)),
+    channelOf: (channelId) => {
+      const c = vault.getChannel(channelId)
+      if (!c || !c.enabled) return null
+      return { id: c.id, label: c.label, baseUrl: c.baseUrl, apiKey: c.apiKey }
     },
     env,
-    pricing: FAKE_PRICING,
     ...(opts.confirmer ? { confirmer: opts.confirmer } : {}),
-    providersOverride: {
-      forModel: (model: string) => model === 'configured-video' || model === 'env-video' || model.includes('i2v')
-        ? fakeVideoProvider()
-        : fakeImageProvider(`https://img.example/${model.replace(/\W/g, '-')}.png`),
-    },
+    providersOverride: { forSlot },
     fetchImpl: fetchFake,
   })
-  return { dir, vault, runs, run, rd, tools }
+  return { dir, vault, runs, run, rd, tools, seen }
 }
 
 test('vgen_status：返回 run 概要与近期事件；未知 runId 报 not-found', async () => {
@@ -92,93 +107,114 @@ test('vgen_status：返回 run 概要与近期事件；未知 runId 报 not-foun
   }
 })
 
-test('vgen_generate：生产确认路径被拒 -> confirm-required 信封，段置 failed', async () => {
-  const s = setup() // 不注入 confirmer：走生产确认路径
+test('vgen_generate：生产确认路径估价未知被拒 → confirm-required 信封，段置 failed（消息含确认阈值）', async () => {
+  const s = setup() // 不注入 confirmer：走生产确认路径；est 恒 null（价目拉取失败容错）
   try {
+    bindImageSlots(s.vault)
+    s.vault.setBudget(1)
     const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; error: { code: string; message: string } }
     assert.equal(r.ok, false)
     assert.equal(r.error.code, 'confirm-required')
-    assert.ok(r.error.message.includes('confirm'))
+    assert.match(r.error.message, /确认阈值/)
     assert.equal(s.runs.get(s.run.id)!.stages['master-asset'], 'failed')
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
 
-test('vgen_generate：确认通过 -> assets 段完成并返回镜头数（注入确认 + fake providers）', async () => {
-  const s = setup({ confirmer: async () => true })
+test('vgen_generate：confirm:true 全量放行 → assets 段完成，provider 收到槽位绑定的模型/协议', async () => {
+  const s = setup() // 生产确认路径：args.confirm === true 全部放行
   try {
-    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; value: { stages: Record<string, string>; shots: number } }
+    bindImageSlots(s.vault)
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', confirm: true }) as { ok: boolean; value?: { stages: Record<string, string>; shots: number } }
     assert.equal(r.ok, true)
-    assert.equal(r.value.stages['shot-assets'], 'done')
-    assert.ok(r.value.shots >= 1)
+    assert.equal(r.value!.stages['master-asset'], 'done')
+    assert.equal(r.value!.stages['shot-assets'], 'done')
+    assert.equal(r.value!.shots, 3)
+    const masterCalls = s.seen.filter((c) => c.slot === 'image.master')
+    const shotCalls = s.seen.filter((c) => c.slot === 'image.shot')
+    assert.ok(masterCalls.length >= 1 && shotCalls.length >= 1, 'master/shot 两槽都应构造 provider')
+    for (const c of [...masterCalls, ...shotCalls]) {
+      assert.equal(c.protocol, 'openai-images')
+    }
+    assert.ok(masterCalls.every((c) => c.model === 'img-model'))
+    assert.ok(shotCalls.every((c) => c.model === 'shot-model'))
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
 
-test('M4: gates 参数校验非法模式 → bad-request，合法 → 持久化进 run.json', async () => {
+test('M4: gates 参数校验：非法键/模式 → bad-request，合法 → 持久化进 run.json', async () => {
   const s = setup({ confirmer: async () => true })
   try {
-    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gates: { video: 'teleport' } as unknown as Record<string, 'auto' | 'ask' | 'manual'> }) as { ok: boolean; error?: { code: string } }
-    assert.equal(r.ok, false)
-    if (!r.ok) assert.equal(r.error!.code, 'bad-request')
-    const r2 = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gates: { video: 'manual' } }) as { ok: boolean }
+    bindImageSlots(s.vault)
+    const badMode = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gates: { video: 'teleport' } as unknown as Record<string, 'auto' | 'ask' | 'manual'> }) as { ok: boolean; error?: { code: string; message: string } }
+    assert.equal(badMode.ok, false)
+    assert.equal(badMode.error!.code, 'bad-request')
+    assert.match(badMode.error!.message, /auto\|ask\|manual/)
+    const badKey = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gates: { teleport: 'auto' } }) as { ok: boolean; error?: { code: string } }
+    assert.equal(badKey.ok, false)
+    assert.equal(badKey.error!.code, 'bad-request')
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gates: { video: 'manual' } }) as { ok: boolean }
     // video 段在 assets 目标下不执行，gates 仅持久化
-    assert.equal(r2.ok, true)
+    assert.equal(r.ok, true)
     assert.deepEqual(s.runs.get(s.run.id)!.gates, { video: 'manual' })
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
 
-test('M4: manual gate → manual-gate 信封（指引 vgen_provide）', async () => {
+test('M4: manual gate → manual-gate 信封（指引 vgen_provide），段不执行', async () => {
   const s = setup({ confirmer: async () => true })
   try {
+    bindImageSlots(s.vault)
     s.runs.setGates(s.run.id, { 'master-asset': 'manual' })
-    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; error: { code: string; message: string } }
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; error?: { code: string; message: string } }
     assert.equal(r.ok, false)
+    assert.ok(r.error, 'manual gate 必须返回错误信封')
     assert.equal(r.error.code, 'manual-gate')
     assert.match(r.error.message, /vgen_provide/)
+    assert.equal(s.runs.get(s.run.id)!.stages['master-asset'] ?? 'pending', 'pending')
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
 
-test('M4: ask gate 未批 → gate-approval 信封；gateApprovals 放行后通过', async () => {
-  const s = setup({ confirmer: async () => true })
+test('M4: ask gate：未批 → gate-approval 信封；gateApprovals 放行后通过', async () => {
+  const s = setup()
   try {
+    bindImageSlots(s.vault)
     s.runs.setGates(s.run.id, { 'master-asset': 'ask' })
-    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; error?: { code: string } }
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', confirm: true }) as { ok: boolean; error?: { code: string; message: string } }
     assert.equal(r.ok, false)
-    assert.equal(r.error!.code, 'gate-approval')
-    const r2 = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', gateApprovals: ['master-asset'] }) as { ok: boolean; error?: { code: string } }
-    assert.notEqual(r2.ok ? '' : r2.error!.code, 'gate-approval')
-  } finally {
-    rmSync(s.dir, { recursive: true, force: true })
-  }
-})
-
-test('M4: rerunStage 把已 done 段重置 pending 后重跑', async () => {
-  const s = setup({ confirmer: async () => true })
-  try {
-    s.runs.setStage(s.run.id, 'master-asset', 'done')
-    await s.tools.generate.execute({ runId: s.run.id, target: 'assets', rerunStage: 'master-asset' })
-    // mock provider 全链路会重新生成 → 段回到 done 且出现第二次 stage-start 事件
-    const starts = s.runs.get(s.run.id)!.events.filter((e) => e.type === 'stage-start' && (e.detail as { stage?: string } | undefined)?.['stage'] === 'master-asset')
-    assert.ok(starts.length >= 1)
+    assert.ok(r.error, 'ask gate 未批必须返回错误信封')
+    assert.equal(r.error.code, 'gate-approval')
+    assert.match(r.error.message, /gateApprovals/)
+    // 段仍是 pending（未被跳过执行）
+    assert.equal(s.runs.get(s.run.id)!.stages['master-asset'] ?? 'pending', 'pending')
+    // 用户批准后携带 gateApprovals 重调 → 放行执行
+    const r2 = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', confirm: true, gateApprovals: ['master-asset'] }) as { ok: boolean }
+    assert.equal(r2.ok, true)
     assert.equal(s.runs.get(s.run.id)!.stages['master-asset'], 'done')
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
 
-test('M4: rerunStage 非媒体段 → bad-request', async () => {
+test('M4: rerunStage 把已 done 段重置 pending 后重跑；非媒体段 → bad-request', async () => {
   const s = setup({ confirmer: async () => true })
   try {
-    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', rerunStage: 'story' }) as { ok: boolean; error: { code: string; message: string } }
-    assert.equal(r.ok, false)
-    assert.match(r.error.message, /媒体段/)
+    bindImageSlots(s.vault)
+    const bad = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', rerunStage: 'story' }) as { ok: boolean; error: { code: string; message: string } }
+    assert.equal(bad.ok, false)
+    assert.match(bad.error.message, /媒体段/)
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets', rerunStage: 'master-asset' }) as { ok: boolean }
+    assert.equal(r.ok, true)
+    assert.equal(s.runs.get(s.run.id)!.stages['master-asset'], 'done')
+    // 重置后确实重跑了一次（新 run 此前无 stage-start）
+    const starts = s.runs.get(s.run.id)!.events.filter((e) => e.type === 'stage-start' && (e.detail as { stage?: string } | undefined)?.['stage'] === 'master-asset')
+    assert.equal(starts.length, 1)
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }
@@ -198,81 +234,153 @@ test('M4: vgen_status 返回 reviews/gates', async () => {
   }
 })
 
-test('M4: 通道 models 优先于 VGEN_VIDEO_MODEL 传导到 provider 选择', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'vgen-gen-vm-'))
+test('vgen_generate：video 段模型一律来自 video 槽绑定（i2v 参考图模式，clips 事件 mode=i2v）', async () => {
+  const s = setup() // 替代旧「通道 models 优先于 VGEN_VIDEO_MODEL」：槽位绑定是唯一模型来源
   try {
-    const vault = VaultStore.open({ file: join(dir, 'vault.json') })
-    vault.createChannel({
-      id: 've',
-      baseUrl: 'https://x.example',
-      apiKey: 'sk-vgen-12345678',
-      models: [
-        { model: 'configured-image', kind: 'image' },
-        { model: 'configured-video', kind: 'video' },
-      ],
+    bindImageSlots(s.vault)
+    s.vault.setSlotBinding({ slot: 'video', channelId: 've', model: 'vid-model', protocol: 'openai-video' })
+    // 预置前序段完成 + shot-urls 事件，聚焦 video 段
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    s.runs.setStage(s.run.id, 'shot-assets', 'done')
+    s.runs.appendEvent(s.run.id, 'shot-urls', {
+      urls: SHOTS.shots.map((x) => ({ index: x.index, url: `https://img.example/shot-${x.index}.png`, file: `shot-${x.index}.png` })),
     })
-    vault.setDefaultChannel('ve')
-    const runs = RunStore.open({ rootDir: join(dir, 'runs') })
-    const run = runs.create('换档')
-    runs.setStage(run.id, 'story', 'done')
-    runs.setStage(run.id, 'script', 'done')
-    runs.setStage(run.id, 'storyboard', 'done')
-    const rd = join(dir, 'runs', run.id)
-    writeFileSync(join(rd, 'story.json'), JSON.stringify(STORY))
-    writeFileSync(join(rd, 'script.json'), JSON.stringify(SCRIPT))
-    writeFileSync(join(rd, 'storyboard.json'), JSON.stringify({ ...SHOTS, characters: SCRIPT.characters, scenes: SCRIPT.scenes }))
-    const requested: string[] = []
-    const env = { DSH_HOME: dir, VGEN_FFMPEG: '', VGEN_VIDEO_MODEL: 'env-video' } as unknown as NodeJS.ProcessEnv
-    const tools = buildGenerateTools({
-      vault, runs,
-      channel: () => {
-        const current = vault.getChannel('ve')!
-        return { id: current.id, label: current.label, baseUrl: current.baseUrl, apiKey: current.apiKey, models: current.models }
-      },
-      env,
-      pricing: FAKE_PRICING,
-      providersOverride: {
-        forModel: (model: string) => {
-          requested.push(model)
-          return model === 'configured-video' || model === 'env-video' || model.includes('i2v')
-            ? fakeVideoProvider()
-            : fakeImageProvider(`https://img.example/${model.replace(/\W/g, '-')}.png`)
-        },
-      },
-      fetchImpl: fetchFake,
-    })
-    const r = await tools.generate.execute({ runId: run.id, target: 'video', confirm: true }) as { ok: boolean }
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'video', confirm: true }) as { ok: boolean; value?: { clips: number; stages: Record<string, string> } }
     assert.equal(r.ok, true)
-    assert.ok(requested.includes('configured-video'), 'video 段应使用默认通道的 video 模型')
-    assert.ok(!requested.includes('env-video'), '生产路径不得使用 VGEN_VIDEO_MODEL 覆盖通道模型')
-    assert.ok(!requested.some((model) => /happyhorse|doubao-seedream/.test(model)), '不得回退硬编码 image/video 模型')
+    assert.equal(r.value!.stages['video'], 'done')
+    assert.equal(r.value!.clips, 3)
+    const videoCalls = s.seen.filter((c) => c.slot === 'video')
+    assert.ok(videoCalls.length >= 1, 'video 段（含前序校验）应构造 provider')
+    for (const c of videoCalls) {
+      assert.equal(c.model, 'vid-model')
+      assert.equal(c.protocol, 'openai-video')
+    }
+    const clipsEvent = s.runs.get(s.run.id)!.events.find((e) => e.type === 'clips')
+    assert.equal((clipsEvent!.detail as { mode?: string }).mode, 'i2v')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(s.dir, { recursive: true, force: true })
   }
 })
 
-test('vgen_generate 缺少 video 模型时返回 model-unavailable 且不调用 confirmer', async () => {
+test('vgen_generate：video 槽声明 textToVideo 且无参考图 → t2v 降级（clips 事件 mode=t2v）', async () => {
+  const s = setup()
+  try {
+    s.vault.setSlotBinding({
+      slot: 'video', channelId: 've', model: 'vid-model', protocol: 'openai-video',
+      capabilities: { imageToVideo: false, textToVideo: true },
+    })
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    s.runs.setStage(s.run.id, 'shot-assets', 'done') // 无 shot-urls 事件 → 无参考图
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'video', confirm: true }) as { ok: boolean; value?: { clips: number } }
+    assert.equal(r.ok, true)
+    assert.equal(r.value!.clips, 3)
+    const clipsEvent = s.runs.get(s.run.id)!.events.find((e) => e.type === 'clips')
+    assert.equal((clipsEvent!.detail as { mode?: string }).mode, 't2v')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('vgen_generate：有 shot 参考图但 imageToVideo/textToVideo 均未启用 → model-unavailable', async () => {
+  const s = setup()
+  try {
+    s.vault.setSlotBinding({
+      slot: 'video', channelId: 've', model: 'vid-model', protocol: 'openai-video',
+      capabilities: { imageToVideo: false, textToVideo: false },
+    })
+    s.runs.setStage(s.run.id, 'master-asset', 'done')
+    s.runs.setStage(s.run.id, 'shot-assets', 'done')
+    s.runs.appendEvent(s.run.id, 'shot-urls', { urls: [{ index: 1, url: 'https://img.example/shot-1.png', file: 'shot-1.png' }] })
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'video', confirm: true }) as { ok: boolean; error?: { code: string; message: string } }
+    assert.equal(r.ok, false)
+    assert.equal(r.error?.code, 'model-unavailable')
+    assert.match(r.error?.message ?? '', /imageToVideo\/textToVideo 均未启用/)
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('vgen_generate：slots 为空 → model-unavailable（含用途槽指引），confirmer 零调用、零 spend 事件', async () => {
   let confirmCalls = 0
   const s = setup({
-    models: [{ model: 'configured-image', kind: 'image' }],
+    slots: () => ({}),
     confirmer: async () => { confirmCalls++; return true },
   })
   try {
     const r = await s.tools.generate.execute({ runId: s.run.id, target: 'video', confirm: true }) as { ok: boolean; error?: { code: string; message: string } }
     assert.equal(r.ok, false)
     assert.equal(r.error?.code, 'model-unavailable')
+    assert.match(r.error?.message ?? '', /用途槽/)
     assert.match(r.error?.message ?? '', /video/)
     assert.equal(confirmCalls, 0)
+    const spends = s.runs.get(s.run.id)!.events.filter((e) => e.type === 'spend')
+    assert.equal(spends.length, 0)
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }
 })
 
-test('configuredCloudTts 使用默认通道中第一个 kind=tts 模型', () => {
-  const config = configuredCloudTts({ id: 've', baseUrl: 'https://x.example', apiKey: 'k', models: [
-    { model: 'tts-first', kind: 'tts' },
-    { model: 'tts-second', kind: 'tts' },
-  ] }, { VGEN_TTS_VOICE: 'alloy', VGEN_TTS_INSTRUCTIONS: '温柔' })
-  assert.equal(config?.model, 'tts-first')
-  assert.equal(config?.voice, 'alloy')
+test('configuredCloudTts：能力位 voice/instructions 优先于 env（绑定级声明优先）', () => {
+  const binding: SlotBinding = { slot: 'tts', channelId: 've', model: 'tts-model', protocol: 'openai-tts', capabilities: { voice: 'Wanwan', instructions: 'calm' } }
+  const channel = { id: 've', baseUrl: UNREACHABLE, apiKey: 'sk-vgen-12345678' }
+  const cfg = configuredCloudTts(binding, channel, { VGEN_TTS_VOICE: 'env-voice', VGEN_TTS_INSTRUCTIONS: 'env-语气' })
+  assert.equal(cfg.baseUrl, UNREACHABLE)
+  assert.equal(cfg.model, 'tts-model')
+  assert.equal(cfg.voice, 'Wanwan')
+  assert.equal(cfg.instructions, 'calm')
+})
+
+test('configuredCloudTts：能力位缺省回退 env VGEN_TTS_VOICE/INSTRUCTIONS；再缺省 undefined', () => {
+  const binding: SlotBinding = { slot: 'tts', channelId: 've', model: 'tts-model', protocol: 'openai-tts', capabilities: {} }
+  const channel = { id: 've', baseUrl: UNREACHABLE, apiKey: 'sk-vgen-12345678' }
+  const viaEnv = configuredCloudTts(binding, channel, { VGEN_TTS_VOICE: 'alloy', VGEN_TTS_INSTRUCTIONS: '温柔' })
+  assert.equal(viaEnv.voice, 'alloy')
+  assert.equal(viaEnv.instructions, '温柔')
+  const none = configuredCloudTts(binding, channel, {})
+  assert.equal(none.voice, undefined)
+  assert.equal(none.instructions, undefined)
+})
+
+test('vgen_generate：阈值 0 且估价未知仍 confirm-required（unknown 一律确认）', async () => {
+  // 数字阈值的放行分支（est <= threshold → approve）依赖真实网络价目，离线无法构造非 null est，
+  // 故此处只覆盖 unknown 恒确认语义：threshold=0 不改变"估价未知必确认"。
+  const s = setup()
+  try {
+    bindImageSlots(s.vault)
+    s.vault.setBudget(0)
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'assets' }) as { ok: boolean; error?: { code: string } }
+    assert.equal(r.ok, false)
+    assert.equal(r.error?.code, 'confirm-required')
+    assert.equal(s.runs.get(s.run.id)!.stages['master-asset'], 'failed')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+/* ── P1：target=music ── */
+
+test('vgen_generate defs：target 枚举含 music', () => {
+  const s = setup()
+  try {
+    const defs = generateToolDefs(s.tools)
+    const def = defs.find((d) => d.name === 'vgen_generate')!
+    const enumVals = (def.parameters as { properties: { target: { enum: string[] } } }).properties.target.enum
+    assert.ok(enumVals.includes('music'))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('vgen_generate target=music：bgm 未绑定 → ok + music-skip 事件（D6 不阻断）', async () => {
+  const s = setup({ slots: () => ({}) })
+  try {
+    // 前序媒体段全部 done：本用例只看 music 未绑定跳过（D6）
+    for (const st of ['master-asset', 'shot-assets', 'video'] as const) s.runs.setStage(s.run.id, st, 'done')
+    const r = await s.tools.generate.execute({ runId: s.run.id, target: 'music' }) as { ok: boolean; value: { stages: Record<string, string> } }
+    assert.equal(r.ok, true)
+    assert.notEqual(r.value.stages['music'], 'done')
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-skip'))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
 })

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { STAGES } from '../src/stages.ts'
 import { mergePromptLayers, buildCharacterSheetPrompt, buildScenePrompt, buildShotPrompt, GENERIC_NEGATIVE } from '../src/prompts.ts'
 
-test('STAGES 七段常量：单一事实源（id 有序）', () => {
-  assert.deepEqual(STAGES, ['story', 'script', 'storyboard', 'master-asset', 'shot-assets', 'video', 'final-cut'])
+test('STAGES 八段常量：单一事实源（id 有序，music 在 video 与 final-cut 之间）', () => {
+  assert.deepEqual(STAGES, ['story', 'script', 'storyboard', 'master-asset', 'shot-assets', 'video', 'music', 'final-cut'])
 })
 
 test('四层合并：dna+模板+手写顺序拼接为正向，injections 独立为负向', () => {

@@ -14,8 +14,7 @@ import { buildChannelsTools, channelsToolDefs } from '../tools/channels.ts'
 import { buildDramaTools, dramaToolDefs } from '../tools/drama.ts'
 import { DramaHost, type WorkspaceRegistryFace } from '../drama/gateway.ts'
 import { handleDramaApi } from './project-routes.ts'
-import type { ChannelRef } from '../registry.ts'
-import { modelUnavailableFrom } from '../model-selection.ts'
+import type { ChannelRef } from '../providers/protocols.ts'
 import { PLUGIN_ID, handleApi, healthPayload, isLoopbackRequest, resolveMediaPath, mediaContentType } from './routes.ts'
 
 export const name = PLUGIN_ID
@@ -98,29 +97,19 @@ export function apply(ctx: HostContext): () => void {
   }
   // 原生工具：直接注册（super-ppts 模式，不用回调式 inject）。
   const handoff = buildHandoffTools({ vault, runs, drama: dramaHost })
-  // 默认通道解析：generate 与 review 共用（按当前 defaultChannelId 现取，切通道即时生效）。
-  const resolveChannel = (): ChannelRef => {
-    const d = vault.load().defaultChannelId
-    const c = d ? vault.getChannel(d) : null
-    if (!c) {
-      const missingId = d ?? 'default'
-      throw modelUnavailableFrom({ id: missingId, label: d ?? '默认通道', models: [] }, 'image/video/tts', null, '当前默认通道不存在')
-    }
-    return {
-      id: c.id,
-      label: c.label,
-      baseUrl: c.baseUrl,
-      apiKey: c.apiKey,
-      // 旧 vault 可能没有 models 字段：不迁移文件，运行时按空列表兼容。
-      models: Array.isArray(c.models) ? c.models : [],
-    }
+  // 用途槽接线：绑定表现取（切配置即时生效）；凭证解析拒绝缺失/停用通道。
+  const slots = () => vault.load().slots
+  const channelOf = (channelId: string): ChannelRef | null => {
+    const c = vault.getChannel(channelId)
+    if (!c || !c.enabled) return null
+    return { id: c.id, label: c.label, baseUrl: c.baseUrl, apiKey: c.apiKey }
   }
   // 宿主生命周期信号：disposer 里 abort，在飞 vgen_generate 在段边界/并发泵
   // 检查点停下（置 run failed(host-interrupted)），不再继续调用通道 API 计费。
   const lifecycle = new AbortController()
-  const generateTools = buildGenerateTools({ vault, runs, channel: resolveChannel, signal: lifecycle.signal })
+  const generateTools = buildGenerateTools({ vault, runs, slots, channelOf, signal: lifecycle.signal })
   const provideTools = buildProvideTools({ runs, env: process.env })
-  const reviewTools = buildReviewTools({ vault, runs, channel: resolveChannel })
+  const reviewTools = buildReviewTools({ vault, runs, slots, channelOf })
   const channelsTools = buildChannelsTools({ vault, runs })
   const dramaTools = buildDramaTools(dramaHost)
   for (const dispose of [
