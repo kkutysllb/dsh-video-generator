@@ -85,6 +85,23 @@
 
 - 279 → **292**（music 段 4 + BGM 混音 2 + lyrics 2 + artifacts/timeline/tools-generate/client 各 1）；`demo:mock` 零 key 全链路（含 music-skip 路径）EXIT=0。
 
+## P2 —— MV 对点（同批草案，未发布）
+
+### 新增
+
+- **编排模式**：`vgen_story` 增可选 `mode`（`drama` | `mv`，缺省 drama），落 run.json；返回值带 mode。
+- **music 段 mv 分支**：走 `music.song` 槽（`instrumental=false`），注入 `vgen_script` 的歌词；产物 `music/song.mp3`。
+- **段落/节拍网格三级来源**（`music/score.json` 的 `grid.source` 如实标注）：
+  ① `api`——generic-music `sectionsPath` 命中（适配器把段落解析进 fetch meta）；
+  ② `local-analysis`——本地 PCM 分析（ffmpeg 抽 s16le 单声道 22.05k → RMS 包络 → onset 检测 → 倍频梳状自相关估 BPM/相位 → 能量谷切段落）；零新依赖；
+  ③ `estimate`——按歌词段落均分兜底。
+- **MV 时长预算**：storyboard 时长自动等比缩放到歌曲时长（单镜夹 2–10s、两轮再分配），`mv-budget` 事件留痕，偏差 ≤±2%（单测钉死）。
+- **成片对点收口**：final-cut 总长超歌 >2% → 时间线等比修剪，渲染端对超长素材按槽位 `-t`（只裁不撑），`mv-trim`/`mv-deviation` 事件留痕。
+
+### 测试
+
+- 292 → **311**（网格分析 4 + 预算 4 + score 组装 4 + sections 提取 1 + mv 全链 2 + story mode/预算 3 + 渲染修剪 1）；typecheck 0；`demo:mock` EXIT=0（drama 路径回归）。
+
 ## 发布链
 
 （**全部冻结**，见顶部状态声明）

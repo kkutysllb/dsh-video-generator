@@ -48,3 +48,8 @@ cd /Users/libing/kk_Projects/dsh-video-generator && npm pack \
 - [ ] 预算与 gate：`music` 出现在 gate 缺省下拉（MEDIA_STAGES）。
 - [ ] 端到端 BGM：绑定 music.bgm（真实音乐端点）→ 对 demo 造的 run 跑 `vgen_generate target=final` → 成片含垫底 BGM、人声起时音乐被压低。
 - [ ] 未绑定路径：解除绑定再跑 → `music-skip` 事件、成片正常。
+
+## E. P2 GUI 复验（实例重启后）
+
+- [ ] `vgen_story {mode:'mv'}` → music 段走 `music.song`（真实端点 + 歌词）→ `music/score.json` 生成且 `grid.source` 与实际来源一致。
+- [ ] storyboard 预算：`mv-budget` 事件偏差 ≤±2%；成片 `mv-trim`/`mv-deviation` 事件。

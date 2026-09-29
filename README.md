@@ -167,7 +167,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 
 - 手动提供的 shot 参考图无公网 URL → video 段自动 i2v 不可用（`vgen_provide` 响应内警示；评审重拍拒绝并给出 `rerunStage` 指引）。
 - 文生视频降级：video 槽勾选 `textToVideo` 能力位后，无参考图时自动走 t2v；未勾选则明确失败（不再尝试替代模型——用途槽范式下单槽单模型）。
-- 音乐：BGM 已全链路（`music` 段生成 + 成片混音：循环补长/裁切、人声 ducking、首尾淡入淡出，默认开启、未绑定自动跳过）；`music.song` 与 MV 先曲后镜在 P2。
+- 音乐：BGM 已全链路（`music` 段生成 + 成片混音：循环补长/裁切、人声 ducking、首尾淡入淡出，默认开启、未绑定自动跳过）；MV 已支持 `mode=mv` 先曲后镜 + 段落/节拍网格三级来源（api / 本地分析 / 均分兜底，`score.json` 溯源）；歌词经 `vgen_script.lyrics` 由会话模型产出。素材短于歌曲的撑帧延长不支持（只裁不撑，`mv-trim`/`mv-deviation` 事件留痕）。
 - kling 上游饱和，`pin-kling-contract.ts` 真机钉契约挂起；Windows SAPI 配音未真机验证（无 Windows 机器）；`openai-video` 通用族契约（/v1/videos）按 Sora 风格实现，真机待钉。
 - happyhorse 等免费档模型带平台水印 → 仅文档警示 + 设置页备注。
 
