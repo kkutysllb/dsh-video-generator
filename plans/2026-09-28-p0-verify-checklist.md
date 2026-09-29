@@ -4,6 +4,7 @@
 
 > 日期：2026-09-28 · 分支 `feat/channel-slot-refactor` @ 9b018e8 + 白屏修复
 > 实例：`DSH_HOME=~/.kcoder-dev dsh --profile p0web` → http://127.0.0.1:3080（快照安装 2.0.2.tgz，非 symlink）
+> **验收结论（2026-09-29，需求方确认）：dev 下验证没有问题。** B/D/E 人工项与 A 节自动化项均视为通过；P0–P2 交付在 dev 环境验收完毕。
 > 运行数据根：`~/.kcoder-dev/.dsh-video-generator/`（与生产完全隔离，已由设置页「产物根目录」核实）
 
 ## A. 已自动化验证（2026-09-28，全部通过）
@@ -23,10 +24,10 @@
 
 ## B. 待人工（需要你的眼睛 / 真实通道 key）
 
-- [ ] **真实通道逐槽「测试」**：在 p0web 实例里给 image.master / image.shot / video / tts / music.bgm / music.song 填真实模型名，各点一次「测试」（会产生小额真实消费；音乐槽先「套用模板」再填 path/字段）。核对 `verifiedAt/verifyNote` 留痕与失败文案。
-- [ ] **保存绑定 → 生成链路**：绑定后对既有 run（或 demo 造的 run）执行 `vgen_generate`，核对模型确实来自槽位、spend 事件与阈值确认语义。
-- [ ] **迁移真机验证**：拷一份真实旧 `vault.json`（含 models[] + 默认通道）到 dev home 的 vault 路径，重载设置页 → 核对六槽按规则填充、`.v1.bak-*` 备份生成；再用备份覆盖回滚一次。
-- [ ] 漫剧工坊主面板（侧边栏）打开/返回/项目列表照常（本轮未动，回归目检即可）。
+- [x] **真实通道逐槽「测试」**：在 p0web 实例里给 image.master / image.shot / video / tts / music.bgm / music.song 填真实模型名，各点一次「测试」（会产生小额真实消费；音乐槽先「套用模板」再填 path/字段）。核对 `verifiedAt/verifyNote` 留痕与失败文案。
+- [x] **保存绑定 → 生成链路**：绑定后对既有 run（或 demo 造的 run）执行 `vgen_generate`，核对模型确实来自槽位、spend 事件与阈值确认语义。
+- [x] **迁移真机验证**：拷一份真实旧 `vault.json`（含 models[] + 默认通道）到 dev home 的 vault 路径，重载设置页 → 核对六槽按规则填充、`.v1.bak-*` 备份生成；再用备份覆盖回滚一次。
+- [x] 漫剧工坊主面板（侧边栏）打开/返回/项目列表照常（本轮未动，回归目检即可）。
 
 ## C. 环境操作
 
@@ -44,12 +45,12 @@ cd /Users/libing/kk_Projects/dsh-video-generator && npm pack \
 
 ## D. P1 GUI 复验（实例已重启装载）
 
-- [ ] run 详情页：阶段 chip 出现 `music`；BGM 产物组（audio 播放器）在有 `music/bgm.mp3` 的 run 上显示。
-- [ ] 预算与 gate：`music` 出现在 gate 缺省下拉（MEDIA_STAGES）。
-- [ ] 端到端 BGM：绑定 music.bgm（真实音乐端点）→ 对 demo 造的 run 跑 `vgen_generate target=final` → 成片含垫底 BGM、人声起时音乐被压低。
-- [ ] 未绑定路径：解除绑定再跑 → `music-skip` 事件、成片正常。
+- [x] run 详情页：阶段 chip 出现 `music`；BGM 产物组（audio 播放器）在有 `music/bgm.mp3` 的 run 上显示。
+- [x] 预算与 gate：`music` 出现在 gate 缺省下拉（MEDIA_STAGES）。
+- [x] 端到端 BGM：绑定 music.bgm（真实音乐端点）→ 对 demo 造的 run 跑 `vgen_generate target=final` → 成片含垫底 BGM、人声起时音乐被压低。
+- [x] 未绑定路径：解除绑定再跑 → `music-skip` 事件、成片正常。
 
 ## E. P2 GUI 复验（实例重启后）
 
-- [ ] `vgen_story {mode:'mv'}` → music 段走 `music.song`（真实端点 + 歌词）→ `music/score.json` 生成且 `grid.source` 与实际来源一致。
-- [ ] storyboard 预算：`mv-budget` 事件偏差 ≤±2%；成片 `mv-trim`/`mv-deviation` 事件。
+- [x] `vgen_story {mode:'mv'}` → music 段走 `music.song`（真实端点 + 歌词）→ `music/score.json` 生成且 `grid.source` 与实际来源一致。
+- [x] storyboard 预算：`mv-budget` 事件偏差 ≤±2%；成片 `mv-trim`/`mv-deviation` 事件。
