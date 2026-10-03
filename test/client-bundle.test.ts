@@ -247,6 +247,14 @@ test('apply：locale 字典含用途槽全套键（zh/en 同步，picker 键已�
   for (const dead of ['pickerSearch', 'pickerSave:', 'pickerSaved', 'adopt:']) {
     assert.ok(!code.includes(dead), `退役词典键 ${dead} 不应存在`)
   }
+  // v1.x「视频工坊 tab」时代与未实现功能（重新生成）的死键不复存在（2.1.0 后清理）
+  for (const dead of [
+    'workTitle:', 'workIntro:', 'topicLabel:', 'topicPlaceholder:', 'sendToChat:',
+    'sentCopied:', 'sentClipboard:', 'sendNone:', 'topicRequired:', 'worksTitle:',
+    'promptVgen:', 'doRegenerate:',
+  ]) {
+    assert.ok(!code.includes(dead), `退役词典键 ${dead} 不应存在`)
+  }
 })
 
 // ── DSH 0.1.7-rc.2 会话桥 v4（lib/client.js 模块级 __testHooks）────────
