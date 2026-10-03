@@ -8,7 +8,7 @@ export interface DashscopeChannel {
   apiKey: string
   model: string
   estimate?: (model: string) => number | null
-  /** Explicit channel kind can identify a custom i2v model absent from the catalog. */
+  /** i2v 模态能力位（槽位绑定声明；缺省 = 仅 t2v——不按模型名猜测，规格 §3）。 */
   imageToVideo?: boolean
 }
 
@@ -41,7 +41,7 @@ function mapState(s: string | undefined): 'running' | 'done' | 'failed' | 'unkno
 
 export function createDashscopeRelayProvider(ch: DashscopeChannel, fetchImpl: typeof fetch = fetch): Provider {
   const base = ch.baseUrl.trim().replace(/\/+$/, '')
-  const isI2v = ch.imageToVideo ?? ch.model.toLowerCase().includes('i2v')
+  const isI2v = ch.imageToVideo ?? false
   const provider: Provider = {
     id: `dashscope-relay:${ch.model}`,
     capabilities: { textToVideo: !isI2v, imageToVideo: isI2v, maxDurationSec: 10, qualityTier: 5 },

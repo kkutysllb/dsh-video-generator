@@ -259,7 +259,7 @@ export function generateToolDefs(
           concurrency: { type: 'number', description: '并发数，默认 2' },
           gates: { type: 'object', description: '可选：每段 gate 模式 {段名: "auto"|"ask"|"manual"}，持久化进 run.json' },
           gateApprovals: { type: 'array', description: '可选：ask 段本次放行清单（用户已批准后携带）' },
-          rerunStage: { type: 'string', enum: ['master-asset', 'shot-assets', 'video', 'final-cut'], description: '可选：重置该媒体段为 pending 后重跑' },
+          rerunStage: { type: 'string', enum: ['master-asset', 'shot-assets', 'video', 'music', 'final-cut'], description: '可选：重置该媒体段为 pending 后重跑' },
         },
         required: ['runId', 'target'],
       },

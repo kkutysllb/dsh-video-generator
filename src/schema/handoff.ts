@@ -85,6 +85,13 @@ const MAX = {
 
 const ID_RE = /^[a-z0-9_-]+$/
 
+/** 歌词段落标签白名单（规格 §6.2，14 标签体系；校验大小写不敏感，允许 ≤16 字符序号/重复后缀如 [Verse 1]）。 */
+export const LYRICS_SECTION_TAGS = [
+  'Intro', 'Verse', 'Pre-Chorus', 'Chorus', 'Post-Chorus', 'Bridge', 'Hook',
+  'Refrain', 'Interlude', 'Break', 'Instrumental', 'Solo', 'Drop', 'Outro',
+] as const
+const LYRICS_TAG_RE = new RegExp(`^\\[(${LYRICS_SECTION_TAGS.join('|')})[^\\]\\n]{0,16}]$`, 'i')
+
 function fail(message: string): never {
   throw new HandoffError('bad-request', message)
 }
@@ -203,13 +210,23 @@ export function validateScript(v: unknown): Script {
     if (!charIds.has(characterId)) fail(`script.dialog[${i}].characterId 引用不存在的角色: ${characterId}`)
     return { sceneId, characterId, line: boundedStr(dr['line'], `script.dialog[${i}].line`, MAX.line) }
   })
-  // 歌词（可选，P1 §6.2）：会话模型产出，14 段落标签体系；非空字符串上限 20000
+  // 歌词（可选，P1 §6.2）：会话模型产出，14 段落标签体系；非空字符串上限 20000；
+  // 段落标签须来自白名单（大小写不敏感，可带序号/重复后缀），且至少一个标签
   const lyricsRaw = r['lyrics']
   let lyrics: string | undefined
   if (lyricsRaw !== undefined && lyricsRaw !== null && lyricsRaw !== '') {
     if (typeof lyricsRaw !== 'string') fail('script.lyrics 须为字符串')
     const trimmed = lyricsRaw.trim()
     if (trimmed.length > 20000) fail(`script.lyrics 超限：${trimmed.length} > 20000`)
+    const tagLines = trimmed.split(/\r?\n/).filter((line) => /^\s*\[[^\]\n]{1,32}]\s*$/.test(line))
+    if (tagLines.length === 0) {
+      fail('script.lyrics 至少需要一个段落标签（[Intro]/[Verse]/[Chorus]/[Bridge]/[Outro]…，14 标签体系）')
+    }
+    for (const line of tagLines) {
+      if (!LYRICS_TAG_RE.test(line.trim())) {
+        fail(`script.lyrics 段落标签须为 14 标签体系（${LYRICS_SECTION_TAGS.join('/')}，可带序号/重复后缀）: ${line.trim().slice(0, 40)}`)
+      }
+    }
     lyrics = trimmed
   }
   return { ...story, scenes, dialog, ...(lyrics !== undefined ? { lyrics } : {}) }

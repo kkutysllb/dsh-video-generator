@@ -36,7 +36,7 @@ test('视频适配器：i2v 时 img_url 进 input；FAILED 带错误消息；429
     { status: 200, body: { output: { task_id: 't2', task_status: 'PENDING' } } },
     { status: 200, body: { output: { task_id: 't2', task_status: 'FAILED', message: '内容审核未通过' } } },
   ])
-  const p = createDashscopeRelayProvider({ baseUrl: 'https://x.example/v1', apiKey: 'sk-test-123456', model: 'happyhorse-1.1-i2v' }, fetchImpl)
+  const p = createDashscopeRelayProvider({ baseUrl: 'https://x.example/v1', apiKey: 'sk-test-123456', model: 'happyhorse-1.1-i2v', imageToVideo: true }, fetchImpl)
   await p.submit('video', { prompt: '动起来', imageUrl: 'https://img.example/a.png' })
   const failed = await p.status('t2')
   assert.equal(failed.state, 'failed')

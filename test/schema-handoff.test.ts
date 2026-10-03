@@ -71,3 +71,25 @@ test('validateScript：lyrics 超限（>20000）与非字符串拒收', () => {
   const r = validateScript({ ...SCRIPT })
   assert.equal(r.lyrics, undefined, '缺省不注入键')
 })
+
+/* ── 歌词 14 段落标签白名单（规格 §6.2 形状校验）────────── */
+
+test('validateScript：歌词标签白名单内（大小写不敏感 + 序号/重复后缀）放行', () => {
+  const r = validateScript({ ...SCRIPT, lyrics: '[Intro]\n前奏吟唱\n[verse 1]\n主歌一句\n[Chorus x2]\n副歌反复\n[bridge]\n桥段\n[Outro]\n收尾' })
+  assert.ok(r.lyrics?.includes('[Chorus x2]'))
+})
+
+test('validateScript：白名单外标签（[Random]/[间奏]）拒收', () => {
+  assert.throws(
+    () => validateScript({ ...SCRIPT, lyrics: '[Random]\n词\n[Chorus]\n副歌' }),
+    (err: unknown) => err instanceof HandoffError && /14 标签体系/.test(err.message),
+  )
+  assert.throws(() => validateScript({ ...SCRIPT, lyrics: '[间奏]\n词' }), /14 标签体系/)
+})
+
+test('validateScript：无任何段落标签的歌词拒收（指引补标签）', () => {
+  assert.throws(
+    () => validateScript({ ...SCRIPT, lyrics: '就是一段没有标签的句子\n第二行' }),
+    (err: unknown) => err instanceof HandoffError && /至少需要一个段落标签/.test(err.message),
+  )
+})

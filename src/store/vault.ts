@@ -197,6 +197,8 @@ export class VaultStore {
       return defaultVaultData()
     }
     // v1（模型池 + defaultChannelId）→ 一次性迁移到 v2：备份原文件后原子替换（规格 §7）。
+    // version > 2 不报错：垃圾/未知版本文件静默 sanitize 是有测试钉死的韧性决策（vault.test），
+    // 「旧版读新版须明确报错」的规格方向由旧插件自身负责。
     if (typeof parsed === 'object' && parsed !== null && (parsed as { version?: unknown }).version === 1) {
       return migrateV1ToV2(this.file, raw, parsed, (d) => this.save(d))
     }

@@ -16,6 +16,7 @@ import { STAGES, type StageId } from '../stages.ts'
 import { pollUntil, retryTransient } from '../poll.ts'
 import { RelayError } from '../providers/relay-http.ts'
 import { bindingUnavailable, isExplicitModelUnavailable, ModelUnavailableError, requireSlotBinding } from '../model-selection.ts'
+import { HandoffError } from '../schema/handoff.ts'
 import { providerForSlot, type ChannelRef } from '../providers/protocols.ts'
 import { generateShotClip, saveUrl, SHOT_MOTION_PROMPT } from './shot-clip.ts'
 import { buildTimeline, writeSrt, type TimelineData, Timeline } from '../finalcut/timeline.ts'
@@ -294,7 +295,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           const url = await retryTransient(() =>
             submitImageWithSize(p, st, job.prompt, size, () => runs.appendEvent(runId, 'size-fallback', { stage: st, size: job.size })),
           )
-          runs.appendEvent(runId, 'spend', { stage: st, model: imageBinding.model, estCny: est, jobId: String(url).slice(0, 80) })
+          runs.appendEvent(runId, 'spend', { stage: st, model: imageBinding.model, estCny: est, channel: channel.id, jobId: String(url).slice(0, 80) })
           deps.recordSpend?.({ channel: channel.id, model: imageBinding.model, kind: 'image', estCny: est, jobId: String(url).slice(0, 80) })
           await saveUrl(fetchImpl, url, job.file)
           urls.push({ key: job.file, url })
@@ -339,7 +340,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           const url = await retryTransient(() =>
             submitImageWithSize(p, st, merged.positive, size, () => runs.appendEvent(runId, 'size-fallback', { stage: st, size: IMAGE_SIZE_PORTRAIT })),
           )
-          runs.appendEvent(runId, 'spend', { stage: st, model: shotBinding.model, estCny: est, shot: shot.index, jobId: String(url).slice(0, 80) })
+          runs.appendEvent(runId, 'spend', { stage: st, model: shotBinding.model, estCny: est, shot: shot.index, channel: channel.id, jobId: String(url).slice(0, 80) })
           deps.recordSpend?.({ channel: channel.id, model: shotBinding.model, kind: 'image', estCny: est, jobId: String(url).slice(0, 80) })
           const file = join(shotsDir, `shot-${String(shot.index).padStart(3, '0')}.png`)
           await saveUrl(fetchImpl, url, file)
@@ -406,7 +407,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
               outFile: file,
               pollDelayMs: deps.pollDelayMs,
               onSubmit: (jobId) => {
-                runs.appendEvent(runId, 'spend', { stage: st, model: videoBinding.model, estCny: est, shot: shot.index, jobId: jobId.slice(0, 80) })
+                runs.appendEvent(runId, 'spend', { stage: st, model: videoBinding.model, estCny: est, shot: shot.index, channel: channel.id, jobId: jobId.slice(0, 80) })
                 deps.recordSpend?.({ channel: channel.id, model: videoBinding.model, kind: 'video', estCny: est, jobId: jobId.slice(0, 80) })
               },
             })
@@ -461,16 +462,20 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         try {
           begin(st)
           mkdirSync(musicDir, { recursive: true })
+          const lyricsText = isMv ? readLyricsText(runs, runId) : null
+          // 规格 §6.2：MV 主曲必须先有歌词（vgen_script.lyrics），缺失 → bad-request 指引补歌词（不代写、不产生花费）
+          if (isMv && !lyricsText) {
+            throw new HandoffError('bad-request', 'MV 主曲需要歌词：先用 vgen_script 携带 lyrics 字段提交歌词（[Intro]/[Verse]/[Chorus]… 段落标签体系），再推进 music 段')
+          }
           const est = deps.estimate(musicBinding)
           if (!(await deps.confirmer(est, 'music'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
-          const lyricsText = isMv ? readLyricsText(runs, runId) : null
           const prompt = isMv
             ? `Comic-drama MV song, ${script.style || 'cinematic'}, catchy melody, clear structure, vocals`
             : `Instrumental background music, ${script.style || 'cinematic'}, calm and unobtrusive, seamless loop, no vocals`
           const spec: Record<string, unknown> = { prompt, instrumental: !isMv, durationSec }
-          if (isMv && lyricsText) spec['lyrics'] = lyricsText
+          if (isMv) spec['lyrics'] = lyricsText
           const { jobId } = await retryTransient(() => provider.submit(st, spec))
-          runs.appendEvent(runId, 'spend', { stage: st, model: musicBinding.model, estCny: est, jobId: String(jobId).slice(0, 80) })
+          runs.appendEvent(runId, 'spend', { stage: st, model: musicBinding.model, estCny: est, channel: channel.id, jobId: String(jobId).slice(0, 80) })
           deps.recordSpend?.({ channel: channel.id, model: musicBinding.model, kind: 'music', estCny: est, jobId: String(jobId).slice(0, 80) })
           const finalState = await pollUntil(
             () => provider.status(String(jobId)),
@@ -623,10 +628,11 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         const data = buildTimeline({ canvas: { width: 1080, height: 1920, fps: 24 }, shots: timelineShots })
         // BGM/MV 主曲混入（D6 默认开）：渲染端循环补长/裁切 + ducking + 淡入淡出
         const bgmCandidates = (record.mode ?? 'drama') === 'mv' ? ['music/song.mp3', 'music/bgm.mp3'] : ['music/bgm.mp3']
-        const bgmFile = bgmCandidates.map((f) => join(runs.rootDir, runId, f)).find((p) => existsSync(p))
+        const bgmRel = bgmCandidates.find((f) => existsSync(join(runs.rootDir, runId, f)))
+        const bgmFile = bgmRel !== undefined ? join(runs.rootDir, runId, bgmRel) : null
         if (bgmFile) {
           data.addMusic(bgmFile, undefined, 0.22)
-          runs.appendEvent(runId, 'bgm-mix', { file: 'music/bgm.mp3', volume: 0.22 })
+          runs.appendEvent(runId, 'bgm-mix', { file: bgmRel, volume: 0.22 })
         }
         const timeline = toTimeline(data)
         const finalPath = join(runs.rootDir, runId, 'final.mp4')

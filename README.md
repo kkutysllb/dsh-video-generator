@@ -143,7 +143,12 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 通道层按**用途槽**组织：每个用途（`image.master` 主图 / `image.shot` 逐镜图 / `video` 视频 / `tts` 配音 / `music.bgm` 背景乐 / `music.song` MV 主曲）**恰好绑定一个模型**——选通道、填模型名、保存后点「测试」做一次真实小额验证。不做模型枚举导入，不支持多模型轮询兜底；未绑定的用途在运行时返回 `model-unavailable`（含槽位名与指引）。
 
 - **通道**：`Base URL + API Key` 凭证层，可建多个；「测试」= 连通性/鉴权/模型枚举自检，结论留痕（不导入）。
-- **用途槽**：模型名手填；能力位按槽声明（如 video 槽勾 `imageToVideo`/`textToVideo`——未勾 t2v 且无参考图时明确失败，不找替代模型）；`image.shot` 未绑定时回落 `image.master`。音乐槽走**通用适配器**（声明式端点映射，零服务商绑定），可套用按协议形态预填的内置模板或另存自己的模板。`music.bgm` 绑定后自动为成片生成垫底 BGM（未绑定自动跳过不阻断）。
+- **用途槽**：模型名手填；能力位按槽声明（如 video 槽勾 `imageToVideo`/`textToVideo`——未勾 t2v 且无参考图时明确失败，不找替代模型）；`image.shot` 未绑定时回落 `image.master`。音乐槽走**通用适配器**（声明式端点映射，零服务商绑定），可套用按协议形态预填的内置模板或另存/删除自己的模板。`music.bgm` 绑定后自动为成片生成垫底 BGM（未绑定自动跳过不阻断）。
+- **音乐映射字段速查**（generic-music，路径语法 = 点号 + `[n]` 下标）：
+  - `endpoint.path` / `endpoint.method`（缺省 POST）；async 模式另有 `endpoint.statusPath`（轮询 URL，可含 `{id}` 占位）；
+  - `request.promptField`（必填）+ 可选 `lyricsField` / `instrumentalField` / `durationField` / `referenceAudioField` / `extra`（静态附加字段）；
+  - `response.audioPath`（必填）+ 可选 `audioIsBase64` / `urlIsSigned` / `durationPath`（预留，当前时长以 ffmpeg 探测为准）；async 模式必填 `response.jobIdPath` + `response.statusValuePath`（done/failed 值列表可选）；
+  - MV 对点：API 若返回段落时间戳，填 `response.sectionsPath` + `sectionsStartField` / `sectionsEndField` / `sectionsLabelField`。
 - **预算与 gate**：单笔确认阈值（unknown 价一律确认）、媒体段 gate 缺省。
 - **升级迁移**：v2 及更早的 `vault.json`（通道 `models[]` + 默认通道）在首次加载时一次性迁移为槽位绑定，原文件备份为 `vault.json.v1.bak-<时间戳>`；`models[]` 中首个 image/video/tts 分别迁移到对应槽位（image 两槽同源），music 槽留空待配置。回滚：用备份覆盖 `vault.json` 并装回旧版插件。
 
@@ -167,7 +172,7 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-video-generator
 
 - 手动提供的 shot 参考图无公网 URL → video 段自动 i2v 不可用（`vgen_provide` 响应内警示；评审重拍拒绝并给出 `rerunStage` 指引）。
 - 文生视频降级：video 槽勾选 `textToVideo` 能力位后，无参考图时自动走 t2v；未勾选则明确失败（不再尝试替代模型——用途槽范式下单槽单模型）。
-- 音乐：BGM 已全链路（`music` 段生成 + 成片混音：循环补长/裁切、人声 ducking、首尾淡入淡出，默认开启、未绑定自动跳过）；MV 已支持 `mode=mv` 先曲后镜 + 段落/节拍网格三级来源（api / 本地分析 / 均分兜底，`score.json` 溯源）；歌词经 `vgen_script.lyrics` 由会话模型产出。素材短于歌曲的撑帧延长不支持（只裁不撑，`mv-trim`/`mv-deviation` 事件留痕）。
+- 音乐：BGM 已全链路（`music` 段生成 + 成片混音：循环补长/裁切、人声 ducking、首尾淡入淡出，默认开启、未绑定自动跳过）；MV 已支持 `mode=mv` 先曲后镜 + 段落/节拍网格三级来源（api / 本地分析 / 均分兜底，`score.json` 溯源）；歌词经 `vgen_script.lyrics` 由会话模型产出（14 段落标签体系：`[Intro]/[Verse]/[Chorus]/[Bridge]/[Outro]`…，MV 用 song 槽推进前必须已有歌词，否则 `bad-request` 指引补写）。**MV 编排实际形态**：`vgen_storyboard` 先行提交占位 → 推进 `music` 段生成歌曲与网格 → **重新提交 `vgen_storyboard`**（此时按歌曲时长等比缩放每镜时长）→ 继续出片；网格允许手工覆盖：直接改 run 目录 `music/score.json` 后重新提交 storyboard 并重跑后续段。素材短于歌曲的撑帧延长不支持（只裁不撑，`mv-trim`/`mv-deviation` 事件留痕）。
 - kling 上游饱和，`pin-kling-contract.ts` 真机钉契约挂起；Windows SAPI 配音未真机验证（无 Windows 机器）；`openai-video` 通用族契约（/v1/videos）按 Sora 风格实现，真机待钉。
 - happyhorse 等免费档模型带平台水印 → 仅文档警示 + 设置页备注。
 

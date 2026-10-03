@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { advanceRun } from '../src/pipeline/machine.ts'
 import { ModelUnavailableError } from '../src/model-selection.ts'
+import { HandoffError } from '../src/schema/handoff.ts'
 import { RelayError } from '../src/providers/relay-http.ts'
 import { RunStore } from '../src/store/runs.ts'
 import type { ChannelRef } from '../src/providers/protocols.ts'
@@ -573,6 +574,51 @@ test('P2 mode=mv：music.song 未绑定 → music-skip（原因指明 MV 主曲�
     assert.notEqual(r.stages['music'], 'done')
     const ev = s.runs.get(s.run.id)!.events.find((e) => e.type === 'music-skip')
     assert.match(String((ev?.detail as { reason?: string }).reason), /music\.song/)
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('P2 mode=mv：song 槽推进但无歌词 → bad-request（确认之前抛出、零花费，规格 §6.2）', async () => {
+  const s = setup()
+  try {
+    s.runs.setMode(s.run.id, 'mv')
+    const confirmKinds: string[] = []
+    let threw: unknown = null
+    try {
+      await advanceRun({
+        ...BASE, slots: slots({ 'music.song': slot('music.song', 'song-model') }),
+        runs: s.runs, runId: s.run.id, target: 'music',
+        providers: { forSlot: () => fakeImageProvider('https://img.example/x.png') },
+        confirmer: async (_est, kind) => { confirmKinds.push(kind); return true },
+        ffmpeg: null, pollDelayMs: 1,
+      })
+    } catch (err) { threw = err }
+    assert.ok(threw instanceof HandoffError, `抛 HandoffError，实际: ${String(threw)}`)
+    assert.equal((threw as HandoffError).code, 'bad-request')
+    assert.ok(/歌词/.test((threw as Error).message), '消息指引先补歌词')
+    assert.ok(!confirmKinds.includes('music'), 'music 段确认之前抛出（不触发确认交互）')
+    assert.equal(s.runs.get(s.run.id)!.stages['music'], 'failed')
+    assert.equal(
+      s.runs.get(s.run.id)!.events.filter((e) => e.type === 'spend' && e.detail?.['stage'] === 'music').length, 0,
+      'music 段零 spend 事件',
+    )
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('spend 事件含 channel 字段（规格 §4.4 记账四元组）', async () => {
+  const s = setup()
+  try {
+    await advanceRun({
+      ...BASE, runs: s.runs, runId: s.run.id, target: 'shot-assets',
+      providers: { forSlot: () => fakeImageProvider('https://img.example/a.png') },
+      confirmer: async () => true, ffmpeg: null, pollDelayMs: 1,
+    })
+    const spend = s.runs.get(s.run.id)!.events.find((e) => e.type === 'spend')
+    assert.ok(spend, 'spend 事件存在')
+    assert.equal(spend!.detail?.['channel'], 've', 'run 内 spend 事件带通道 id')
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }

@@ -181,7 +181,7 @@ export function buildReviewTools(ctx: ReviewContext): {
               pollDelayMs: pollDelayFromEnv(env),
               // spend 事件在 submit 成功即落（与 machine video 段同序）：重拍中途失败花费也有账
               onSubmit: (jobId) => {
-                ctx.runs.appendEvent(runId, 'spend', { stage: 'video', model: videoBinding.model, estCny: est, shot, jobId: jobId.slice(0, 80) })
+                ctx.runs.appendEvent(runId, 'spend', { stage: 'video', model: videoBinding.model, estCny: est, shot, channel: channel.id, jobId: jobId.slice(0, 80) })
                 ledger.recordSafe({ channel: channel.id, model: videoBinding.model, kind: 'video', estCny: est, jobId: jobId.slice(0, 80) })
               },
             })

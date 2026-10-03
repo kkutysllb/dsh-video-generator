@@ -34,7 +34,7 @@ export const vgenGuidance = `本机已安装 dsh-video-generator 插件（漫剧
 1) vgen_story 提交故事 JSON 开新 run：{ title, logline, style, characters: [{ id（^[a-z0-9_-]+$，≤48）, name, appearance }], chapters: [...] }；
 2) vgen_script 提交剧本 JSON：scenes: [{ id, name, description, characters: [id] }]、dialog: [{ sceneId, characterId, line }]，引用必须存在；
 3) vgen_storyboard 提交分镜数组：每镜 { index（从 1 连续）, line, prompt, characterIds, sceneId?, camera?, durationSec 2..10, voiceHint? }，工具自动注入四层提示词；
-4) vgen_generate { runId, target: 'assets'|'video'|'final', confirm?, concurrency?, gates?, gateApprovals?, rerunStage? }：assets 出角色三视图/场景主图/逐镜参考图，video 逐镜图生视频，final 配音并渲染成片。首次不带 confirm；返回 confirm-required（error.code）→ 向用户转述成本后 confirm:true 重调；gate-approval → 用户批准后 gateApprovals:["段名"] 重调；manual-gate → 收用户文件走 vgen_provide；重做某段 → rerunStage（媒体段重置 pending）；
+4) vgen_generate { runId, target: 'assets'|'video'|'music'|'final', confirm?, concurrency?, gates?, gateApprovals?, rerunStage? }：assets 出角色三视图/场景主图/逐镜参考图，video 逐镜图生视频，music 生成 BGM（drama 模式垫底乐；MV 模式生成主曲，须先经 vgen_script.lyrics 提交歌词），final 配音并渲染成片。首次不带 confirm；返回 confirm-required（error.code）→ 向用户转述成本后 confirm:true 重调；gate-approval → 用户批准后 gateApprovals:["段名"] 重调；manual-gate → 收用户文件走 vgen_provide；重做某段 → rerunStage（媒体段重置 pending）；
 5) vgen_status { runId }：进度 + gates + reviews + 最近事件；
 6) vgen_review { runId, shot, score?, negativeHint?, confirm? } 质量闭环：不带 score → 返回成片 25/50/75% 三帧路径（用读图工具逐帧查看后评分）；带 score 1-5 → ≥3 记通过；≤2 自动追加负面词重拍（每镜 ≤2 次，重拍花费同 confirm 语义），重拍后返回新帧继续评；
 7) vgen_provide { runId, stage, files: [{ path, shot?, name? }] }：manual gate 产物注入（master-asset 文件名 char-*/scene-*；shot-assets/video 逐镜 shot 号，video 须全镜覆盖且时长≥0.5s；final-cut 首文件 .mp4 注入后 run 直接 done）；

@@ -25,8 +25,12 @@ export interface SlotTestResult {
 const IMAGE_TEST_SIZE = '512x512'
 const VIDEO_TEST_SECONDS = 5
 
-export async function testSlotBinding(vault: VaultStore, binding: SlotBinding): Promise<SlotTestResult> {
-  const result = await runSlotTest(vault, binding)
+export async function testSlotBinding(
+  vault: VaultStore,
+  binding: SlotBinding,
+  opts: { fetchImpl?: typeof fetch } = {},
+): Promise<SlotTestResult> {
+  const result = await runSlotTest(vault, binding, opts)
   const note = `${result.ok ? 'ok' : 'fail'}: ${result.error ?? result.detail}`.slice(0, 500)
   try {
     vault.setSlotBinding({ ...binding, verifiedAt: new Date().toISOString(), verifyNote: note })
@@ -36,12 +40,12 @@ export async function testSlotBinding(vault: VaultStore, binding: SlotBinding): 
   return result
 }
 
-async function runSlotTest(vault: VaultStore, binding: SlotBinding): Promise<SlotTestResult> {
+async function runSlotTest(vault: VaultStore, binding: SlotBinding, opts: { fetchImpl?: typeof fetch }): Promise<SlotTestResult> {
   const channel = vault.getChannel(binding.channelId)
   if (!channel) return { ok: false, slot: binding.slot, model: binding.model, detail: '', error: `通道不存在: ${binding.channelId}` }
   if (!channel.enabled) return { ok: false, slot: binding.slot, model: binding.model, detail: '', error: `通道已停用: ${binding.channelId}` }
   const ch: ChannelRef = { id: channel.id, label: channel.label, baseUrl: channel.baseUrl, apiKey: channel.apiKey }
-  const fetchImpl = fetch
+  const fetchImpl = opts.fetchImpl ?? fetch
 
   if (binding.slot === 'tts') {
     // 云端 TTS：一句最短文本，收到非空字节即通过（OpenAI 兼容 /v1/audio/speech）
