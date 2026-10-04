@@ -1,0 +1,41 @@
+# CI（规格 §8：CI = typecheck && node --test；demo:mock 为零 key 全链路硬门槛）。
+# ubuntu-latest 自带 ffmpeg 但缺 drawtext 字体场景的 CJK 字形 → 补 fonts-noto-cjk
+# （成片字幕 drawtext 需要中文字体，pickFontFile 探测系统字体路径）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (tsc 全量)
+        run: npm run typecheck
+
+      - name: Test (node --test)
+        run: npm test
+
+      - name: Install ffmpeg + CJK fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk
+          ffmpeg -version | head -1
+          ffmpeg -hide_banner -filters | grep drawtext
+
+      - name: Mock end-to-end demo（零 key 全链路：交接→资产→视频→成片→评审）
+        run: npm run demo:mock
+        env:
+          VGEN_POLL_DELAY_MS: '50'
