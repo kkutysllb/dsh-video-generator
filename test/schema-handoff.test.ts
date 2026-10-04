@@ -43,6 +43,25 @@ test('validateStoryboard：index 连续/时长 2-10/引用存在', () => {
   assert.throws(() => validateStoryboard({ shots: [{ ...SHOT1, characterIds: ['ghost'] }], characters: STORY.characters, scenes: SCRIPT.scenes }), /characterIds/)
 })
 
+test('validateStoryboard：characterIds 宽容形态（逗号分隔字符串/大小写/唯一角色名映射），报错列出有效 id', () => {
+  // 逗号分隔字符串形态（2.1.1 前被硬拒的 Agent 常见形态）
+  const sb1 = validateStoryboard({ shots: [{ ...SHOT1, characterIds: 'linjing' }], characters: STORY.characters, scenes: SCRIPT.scenes })
+  assert.deepEqual(sb1.shots[0]!.characterIds, ['linjing'])
+  // 大小写不敏感 id 映射 + 唯一角色名映射
+  const sb2 = validateStoryboard({ shots: [{ ...SHOT1, characterIds: ['LinJing', '林鲸'] }], characters: STORY.characters, scenes: SCRIPT.scenes })
+  assert.deepEqual(sb2.shots[0]!.characterIds, ['linjing', 'linjing'])
+  // 非数组非字符串：报错形态说明合法形态
+  assert.throws(
+    () => validateStoryboard({ shots: [{ ...SHOT1, characterIds: 3 }], characters: STORY.characters, scenes: SCRIPT.scenes }),
+    (err: unknown) => err instanceof HandoffError && err.message.includes('逗号分隔字符串'),
+  )
+  // 未知 id：报错消息列出全部有效 id（Agent 不再瞎猜后省略）
+  assert.throws(
+    () => validateStoryboard({ shots: [{ ...SHOT1, characterIds: ['ghost'] }], characters: STORY.characters, scenes: SCRIPT.scenes }),
+    (err: unknown) => err instanceof HandoffError && err.message.includes('ghost') && err.message.includes('linjing'),
+  )
+})
+
 test('validateStory：超长 title（201 字符）报 HandoffError 且消息含实际长度', () => {
   assert.throws(
     () => validateStory({ ...STORY, title: 'x'.repeat(201) }),

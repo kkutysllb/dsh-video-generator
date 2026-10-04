@@ -15,7 +15,7 @@ import { testSlotBinding } from '../slot-probe.ts'
 import { BUILTIN_MUSIC_TEMPLATES } from '../providers/music-templates.ts'
 
 export const PLUGIN_ID = 'dsh-video-generator'
-export const PLUGIN_VERSION = '2.1.1'
+export const PLUGIN_VERSION = '2.1.2'
 
 export interface ApiContext {
   vault: VaultStore

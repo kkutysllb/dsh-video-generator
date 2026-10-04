@@ -1,7 +1,7 @@
 /** 七段流水线状态机：run.json 事实源推进 + 断点续跑 + gate(auto/ask/manual) + 并发泵 + 记账
  *  （规格 §5；通道层 v2：模型一律来自用途槽绑定，单槽单模型，无候选轮询）。
  *  已知限制：断点续跑从事件流恢复的 shot 参考图为签名 URL（7 天有效）；过期导致 video 段失败时，
- *  将 run.json 中 shot-assets 段状态改回 pending 重推即可重新生成。
+ *  用 vgen_generate rerunStage='shot-assets' 显式重做（直接重推属条目级续跑，会跳过已有产物不重新生成）。
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -134,6 +134,24 @@ function readJson<T>(runs: RunStore, runId: string, name: string): T {
 function lastEvent(events: RunEvent[], type: string): RunEvent | undefined {
   const hits = events.filter((e) => e.type === type)
   return hits.length ? hits[hits.length - 1] : undefined
+}
+
+/** 条目级断点续跑（规格 §5.1「已完成段不重花钱」，对齐 music-job 模式）：
+ *  取该段最后一次 stage-redo 之后的 asset-item 事件为已完成集；显式 rerunStage 落 stage-redo，
+ *  之前的条目全部作废（用户点名重做）。key 为段内稳定标识（char:<id>/scene:<id>/shot:<index>）。 */
+function assetDoneSet(events: RunEvent[], stage: string): Map<string, { file: string; url: string }> {
+  let redoIdx = -1
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (e.type === 'stage-redo' && e.detail?.['stage'] === stage) { redoIdx = i; break }
+  }
+  const done = new Map<string, { file: string; url: string }>()
+  for (let i = redoIdx + 1; i < events.length; i++) {
+    const e = events[i]!
+    if (e.type !== 'asset-item' || e.detail?.['stage'] !== stage) continue
+    done.set(String(e.detail['key']), { file: String(e.detail['file'] ?? ''), url: String(e.detail['url'] ?? '') })
+  }
+  return done
 }
 
 /** 简单并发泵：按 index 顺序发起，至多 limit 个在飞；任一失败即熔断（在飞任务自然完成，不再取新任务）。 */
@@ -273,22 +291,28 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       const assetDir = join(runs.rootDir, runId, 'assets')
       mkdirSync(assetDir, { recursive: true })
       const { binding: imageBinding, channel, provider: p } = requireImageProvider('image.master')
-      const jobs: Array<{ file: string; prompt: string; size: string }> = [
+      const jobs: Array<{ key: string; file: string; prompt: string; size: string }> = [
         ...script.characters.map((c) => ({
+          key: `char:${c.id}`,
           file: join(assetDir, `char-${c.id}.png`),
           prompt: buildCharacterSheetPrompt({ name: c.name, appearance: c.appearance, style: script.style }).positive,
           size: IMAGE_SIZE_LANDSCAPE,
         })),
         ...script.scenes.map((sc) => ({
+          key: `scene:${sc.id}`,
           file: join(assetDir, `scene-${sc.id}.png`),
           prompt: buildScenePrompt({ name: sc.name, description: sc.description, style: script.style }).positive,
           size: IMAGE_SIZE_PORTRAIT,
         })),
       ]
+      // 条目级断点续跑：段中途失败（如 600s 工具窗口掐断）后重推，已付费且产物在盘的条目直接跳过
+      const doneItems = assetDoneSet(runs.get(runId)!.events, st)
       const urls: Array<{ key: string; url: string }> = []
       try {
         begin(st)
         await pump(jobs, deps.concurrency ?? 2, async (job) => {
+          const prior = doneItems.get(job.key)
+          if (prior && existsSync(prior.file)) return
           const est = deps.estimate(imageBinding)
           if (!(await deps.confirmer(est, 'image'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
           const size = capabilityFlag(imageBinding, 'sizeParam', true) ? job.size : undefined
@@ -298,6 +322,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           runs.appendEvent(runId, 'spend', { stage: st, model: imageBinding.model, estCny: est, channel: channel.id, jobId: String(url).slice(0, 80) })
           deps.recordSpend?.({ channel: channel.id, model: imageBinding.model, kind: 'image', estCny: est, jobId: String(url).slice(0, 80) })
           await saveUrl(fetchImpl, url, job.file)
+          runs.appendEvent(runId, 'asset-item', { stage: st, key: job.key, file: job.file, url })
           urls.push({ key: job.file, url })
         }, ensureLive)
         done(st)
@@ -318,10 +343,18 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
       const shotsDir = join(runs.rootDir, runId, 'shots')
       mkdirSync(shotsDir, { recursive: true })
       const { binding: shotBinding, channel, provider: p } = requireImageProvider('image.shot')
+      const doneItems = assetDoneSet(runs.get(runId)!.events, st)
       const shotImages: Array<{ index: number; url: string; file: string }> = []
+      // 续跑种子：已付费且产物在盘的条目直接进结果集，保证最终 shot-urls 事件全量（video 段 i2v 输入不缺镜）
+      for (const shot of sb.shots) {
+        const prior = doneItems.get(`shot:${shot.index}`)
+        if (prior && existsSync(prior.file)) shotImages.push({ index: shot.index, url: prior.url, file: prior.file })
+      }
       try {
         begin(st)
         await pump(sb.shots, deps.concurrency ?? 2, async (shot) => {
+          const prior = doneItems.get(`shot:${shot.index}`)
+          if (prior && existsSync(prior.file)) return
           const anchors = shot.characterIds.map((cid) => {
             const c = script.characters.find((x) => x.id === cid)
             return c ? `${c.name}（${c.appearance}）` : String(cid)
@@ -344,6 +377,7 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           deps.recordSpend?.({ channel: channel.id, model: shotBinding.model, kind: 'image', estCny: est, jobId: String(url).slice(0, 80) })
           const file = join(shotsDir, `shot-${String(shot.index).padStart(3, '0')}.png`)
           await saveUrl(fetchImpl, url, file)
+          runs.appendEvent(runId, 'asset-item', { stage: st, key: `shot:${shot.index}`, file, url })
           shotImages.push({ index: shot.index, url, file })
         }, ensureLive)
         shotImages.sort((a, b) => a.index - b.index)

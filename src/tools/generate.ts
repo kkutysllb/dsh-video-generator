@@ -102,6 +102,8 @@ export function buildGenerateTools(ctx: GenerateContext): {
             const rs = String(args['rerunStage'])
             if (!MEDIA_STAGES.includes(rs)) return { ok: false, error: { code: 'bad-request', message: `rerunStage 须为媒体段（${MEDIA_STAGES.join('|')}）: ${rs}` } }
             ctx.runs.setStage(runId, rs, 'pending')
+            // 显式重做留痕：使该段旧的 asset-item 条目作废（条目级续跑据此区分「续查」与「点名重做」）
+            ctx.runs.appendEvent(runId, 'stage-redo', { stage: rs })
           }
           const recGates = ctx.runs.get(runId)?.gates ?? {}
           const effectiveGates = { ...ctx.vault.getGateDefaults(), ...recGates } as MachineDeps['gates']
@@ -195,7 +197,7 @@ export function buildGenerateTools(ctx: GenerateContext): {
             return { ok: false, error: { code: 'gate-approval', message: `${err.message}。请与用户确认该段执行，然后携带 gateApprovals（如 ["master-asset"]）重新调用；或改 gates 为 auto/manual。` } }
           }
           if (err instanceof RunInterruptedError) {
-            return { ok: false, error: { code: 'interrupted', message: `${err.message}。run 已置 failed(host-interrupted)；插件重新启用后可对未完成段用 rerunStage 续跑。` } }
+            return { ok: false, error: { code: 'interrupted', message: `${err.message}。run 已置 failed(host-interrupted)；插件重新启用后直接重推（不带 rerunStage）即可条目级续跑，已付费条目自动跳过。` } }
           }
           if (err instanceof HandoffError) return { ok: false, error: { code: err.code, message: err.message } }
           return { ok: false, error: { code: 'internal', message: err instanceof Error ? err.message : String(err) } }
@@ -259,7 +261,7 @@ export function generateToolDefs(
           concurrency: { type: 'number', description: '并发数，默认 2' },
           gates: { type: 'object', description: '可选：每段 gate 模式 {段名: "auto"|"ask"|"manual"}，持久化进 run.json' },
           gateApprovals: { type: 'array', description: '可选：ask 段本次放行清单（用户已批准后携带）' },
-          rerunStage: { type: 'string', enum: ['master-asset', 'shot-assets', 'video', 'music', 'final-cut'], description: '可选：重置该媒体段为 pending 后重跑' },
+          rerunStage: { type: 'string', enum: ['master-asset', 'shot-assets', 'video', 'music', 'final-cut'], description: '显式全量重做该段（旧条目作废、全部重新计费）；中断/失败后的续跑直接重推（不带本参数）即可，已完成条目自动跳过' },
         },
         required: ['runId', 'target'],
       },

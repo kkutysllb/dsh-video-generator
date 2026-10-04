@@ -330,6 +330,8 @@ test('M4: shot-assets 提交带竖版 size（1024x1536）；sizeParam=false 时�
 
     const specs2: Array<Record<string, unknown>> = []
     s.runs.setStage(s.run.id, 'shot-assets', 'pending')
+    // 全量重做意图（size 能力位翻转后所有镜都要按新 size 重提）：显式落 stage-redo 使旧条目作废
+    s.runs.appendEvent(s.run.id, 'stage-redo', { stage: 'shot-assets' })
     await advanceRun({
       ...BASE,
       slots: slots({ 'image.shot': { capabilities: { sizeParam: false } } }),
@@ -734,6 +736,93 @@ test('music 上游判死（failed 终态）后重推重新提交，不续查死�
     assert.equal(submits, 2, '死任务不续查，重新提交新任务')
     assert.equal(r.stages['music'], 'done')
     assert.ok(!s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-resume'), '无 music-resume')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+/* ── master-asset/shot-assets 条目级断点续跑（规格 §5.1「已完成段不重花钱」；600s 工具窗口掐断可续） ── */
+
+test('master-asset 条目级续跑：段中途失败重推，已付费条目跳过不重复提交；stage-redo 使条目作废', async () => {
+  const s = setup()
+  try {
+    // 首推：第 1 个条目（char:linjing）完成后第 2 次确认处掐断（模拟 600s 工具窗口上限）
+    let confirms = 0
+    const specs1: Array<Record<string, unknown>> = []
+    await assert.rejects(
+      advanceRun({
+        ...BASE, runs: s.runs, runId: s.run.id, target: 'master-asset', concurrency: 1,
+        providers: { forSlot: () => fakeImageProvider('https://img.example/m1.png', specs1) },
+        confirmer: async () => { confirms++; if (confirms >= 2) throw new Error('模拟工具窗口掐断'); return true },
+        ffmpeg: null,
+      }),
+      /模拟工具窗口掐断/,
+    )
+    const run1 = s.runs.get(s.run.id)!
+    assert.equal(run1.stages['master-asset'], 'failed')
+    assert.equal(specs1.length, 1, '掐断前只提交了 1 个条目')
+    assert.equal(run1.events.filter((e) => e.type === 'asset-item').length, 1, '完成条目留痕 asset-item')
+    const charFile = join(s.rd, 'assets', 'char-linjing.png')
+    assert.ok(existsSync(charFile), '已完成条目产物在盘')
+
+    // 重推（无 rerunStage）：已付费条目跳过（不重复提交/计费），只补漏的 scene 条目
+    const specs2: Array<Record<string, unknown>> = []
+    const r2 = await advanceRun({
+      ...BASE, runs: s.runs, runId: s.run.id, target: 'master-asset', concurrency: 1,
+      providers: { forSlot: () => fakeImageProvider('https://img.example/m2.png', specs2) },
+      confirmer: async () => true, ffmpeg: null,
+    })
+    assert.equal(r2.stages['master-asset'], 'done')
+    assert.equal(specs2.length, 1, '重推只补提交未完成的 scene 条目')
+    assert.equal(s.runs.get(s.run.id)!.events.filter((e) => e.type === 'asset-item').length, 2)
+    assert.ok(existsSync(join(s.rd, 'assets', 'scene-s1.png')))
+
+    // 显式重做（rerunStage 落 stage-redo）：旧条目全部作废，重新提交全部条目
+    s.runs.setStage(s.run.id, 'master-asset', 'pending')
+    s.runs.appendEvent(s.run.id, 'stage-redo', { stage: 'master-asset' })
+    const specs3: Array<Record<string, unknown>> = []
+    const r3 = await advanceRun({
+      ...BASE, runs: s.runs, runId: s.run.id, target: 'master-asset', concurrency: 1,
+      providers: { forSlot: () => fakeImageProvider('https://img.example/m3.png', specs3) },
+      confirmer: async () => true, ffmpeg: null,
+    })
+    assert.equal(r3.stages['master-asset'], 'done')
+    assert.equal(specs3.length, 2, 'stage-redo 后全量重做（char + scene）')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('shot-assets 条目级续跑：重推补漏后 shot-urls 事件保持全量（video 段 i2v 输入不缺镜）', async () => {
+  const s = setup()
+  try {
+    s.runs.setStage(s.run.id, 'master-asset', 'done') // 聚焦 shot-assets：master-asset 不消耗确认次数
+    // 首推：shot 1、2 完成后在第 3 次确认处掐断
+    let confirms = 0
+    await assert.rejects(
+      advanceRun({
+        ...BASE, runs: s.runs, runId: s.run.id, target: 'shot-assets', concurrency: 1,
+        providers: { forSlot: () => fakeImageProvider('https://img.example/shot.png') },
+        confirmer: async () => { confirms++; if (confirms >= 3) throw new Error('模拟工具窗口掐断'); return true },
+        ffmpeg: null,
+      }),
+      /模拟工具窗口掐断/,
+    )
+    assert.equal(s.runs.get(s.run.id)!.stages['shot-assets'], 'failed')
+
+    // 重推：shot 1/2 跳过，只补 shot 3；最终 shot-urls 事件含全部 3 镜
+    const specs: Array<Record<string, unknown>> = []
+    const r = await advanceRun({
+      ...BASE, runs: s.runs, runId: s.run.id, target: 'shot-assets', concurrency: 1,
+      providers: { forSlot: () => fakeImageProvider('https://img.example/shot2.png', specs) },
+      confirmer: async () => true, ffmpeg: null,
+    })
+    assert.equal(r.stages['shot-assets'], 'done')
+    assert.equal(specs.length, 1, '重推只补提交 shot 3')
+    const ev = [...s.runs.get(s.run.id)!.events].reverse().find((e) => e.type === 'shot-urls')
+    const urls = (ev!.detail as { urls: Array<{ index: number }> }).urls
+    assert.deepEqual(urls.map((u) => u.index), [1, 2, 3], 'shot-urls 全量（含续跑种子）')
+    assert.equal(r.shotImages?.length, 3)
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }

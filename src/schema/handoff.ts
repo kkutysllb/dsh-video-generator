@@ -241,17 +241,36 @@ export function validateStoryboard(v: unknown): Storyboard {
   const scenes = parseScenes(r['scenes'], 'storyboard.scenes', { requireNonEmpty: false })
   const charIds = new Set(characters.map((c) => c.id))
   const sceneIds = new Set(scenes.map((s) => s.id))
+  const validCharacterIds = characters.map((c) => c.id)
   const shots = shotsRaw.map((s, i) => {
     const sr = asRecord(s, `storyboard.shots[${i}]`)
     const index = Number(sr['index'])
     if (!Number.isInteger(index) || index !== i + 1) fail(`storyboard.shots[${i}].index 须为连续序号（从 1 开始），期望 ${i + 1}`)
     const durationSec = Number(sr['durationSec'])
     if (!Number.isFinite(durationSec) || durationSec < 2 || durationSec > 10) fail(`storyboard.shots[${i}].durationSec 须在 2..10`)
-    const characterIds = strArray(sr['characterIds'] ?? [], `storyboard.shots[${i}].characterIds`)
-    for (const cid of characterIds) {
-      if (cid.length > MAX.characterId) fail(`storyboard.shots[${i}].characterIds 引用 id 超长（上限 ${MAX.characterId}）: ${cid}`)
-      if (!charIds.has(cid)) fail(`storyboard.shots[${i}].characterIds 引用不存在的角色: ${cid}`)
+    // characterIds：数组或逗号/顿号分隔字符串（宽容形态——Agent 常见把 id 列表写成字符串）；
+    // 未命中的引用依次尝试 大小写不敏感 id → 唯一角色名 映射；仍失败则报错并列出有效 id。
+    const rawCids = sr['characterIds'] ?? []
+    let characterIds: string[]
+    if (typeof rawCids === 'string') {
+      characterIds = rawCids.split(/[,，、\s]+/).map((s) => s.trim()).filter((s) => s.length > 0)
+    } else if (Array.isArray(rawCids)) {
+      characterIds = rawCids.map((x, j) => {
+        if (typeof x !== 'string') fail(`storyboard.shots[${i}].characterIds[${j}] 须为字符串 id（有效 id：${validCharacterIds.join('、') || '（story 无角色）'}）`)
+        return x
+      })
+    } else {
+      fail(`storyboard.shots[${i}].characterIds 须为字符串 id 数组或逗号分隔字符串（有效 id：${validCharacterIds.join('、') || '（story 无角色）'}）`)
     }
+    characterIds = characterIds.map((cid) => {
+      if (cid.length > MAX.characterId) fail(`storyboard.shots[${i}].characterIds 引用 id 超长（上限 ${MAX.characterId}）: ${cid}`)
+      if (charIds.has(cid)) return cid
+      const caseHit = validCharacterIds.find((x) => x.toLowerCase() === cid.toLowerCase())
+      if (caseHit !== undefined) return caseHit
+      const nameHits = characters.filter((c) => c.name === cid)
+      if (nameHits.length === 1) return nameHits[0]!.id
+      fail(`storyboard.shots[${i}].characterIds 引用不存在的角色: ${cid}（有效 id：${validCharacterIds.join('、') || '（story 无角色）'}）`)
+    })
     const sceneId = sr['sceneId'] === undefined ? undefined : boundedStr(sr['sceneId'], `storyboard.shots[${i}].sceneId`, MAX.sceneId)
     if (sceneId !== undefined && !sceneIds.has(sceneId)) fail(`storyboard.shots[${i}].sceneId 引用不存在的场景: ${sceneId}`)
     const shot: StoryboardShot = {
