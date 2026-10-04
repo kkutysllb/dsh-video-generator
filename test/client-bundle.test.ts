@@ -243,9 +243,12 @@ test('apply：locale 字典含用途槽全套键（zh/en 同步，picker 键已�
     const hits = code.split(`${key}: "`).length - 1
     assert.ok(hits >= 2, `词典键 ${key} 须 zh/en 双语齐备（现 ${hits} 处）`)
   }
-  // picker 时代词典键不复存在
+  // picker 时代词典键不复存在（按「trim 后行首以键名开头」判定，避免子串误伤
+  // —— 如合法键 resendNone: 含子串 sendNone:）
+  const deadKeyPresent = (dead: string): boolean =>
+    code.split('\n').some((line) => line.trim().startsWith(dead))
   for (const dead of ['pickerSearch', 'pickerSave:', 'pickerSaved', 'adopt:']) {
-    assert.ok(!code.includes(dead), `退役词典键 ${dead} 不应存在`)
+    assert.ok(!deadKeyPresent(dead), `退役词典键 ${dead} 不应存在`)
   }
   // v1.x「视频工坊 tab」时代与未实现功能（重新生成）的死键不复存在（2.1.0 后清理）
   for (const dead of [
@@ -253,7 +256,7 @@ test('apply：locale 字典含用途槽全套键（zh/en 同步，picker 键已�
     'sentCopied:', 'sentClipboard:', 'sendNone:', 'topicRequired:', 'worksTitle:',
     'promptVgen:', 'doRegenerate:',
   ]) {
-    assert.ok(!code.includes(dead), `退役词典键 ${dead} 不应存在`)
+    assert.ok(!deadKeyPresent(dead), `退役词典键 ${dead} 不应存在`)
   }
 })
 
@@ -490,4 +493,25 @@ test('bundle：music 段接线——阶段 chip / gate 下拉 / BGM 产物播放
   assert.match(code, /var MEDIA_STAGES = \["master-asset", "shot-assets", "video", "music", "final-cut"\]/)
   assert.match(code, /artifacts\.music \|\| \[\]/)
   assert.match(code, /React\.createElement\("audio"/)
+})
+
+/* ── flattenRows 逐条目展开（规格 §2.7 字段级对比 / §13 逐条目高亮）────── */
+
+test('flattenRows：数组与嵌套对象逐条目展开为 diff 行', () => {
+  const hooks = loadBundle().mod['__testHooks'] as {
+    flattenRows: (o: unknown, n: unknown) => Array<{ key: string; old: string; new: string; changed: boolean }>
+  }
+  const oldData = { characters: [{ id: 'c1', name: '张三', tags: ['a'] }, { id: 'c2', name: '李四' }] }
+  const newData = { characters: [{ id: 'c1', name: '张三三', tags: ['a', 'b'] }, { id: 'c2', name: '李四' }, { id: 'c3', name: '王五' }] }
+  const rows = hooks.flattenRows(oldData, newData)
+  const byKey = new Map(rows.map((r) => [r.key, r]))
+  assert.ok(byKey.get('characters[0].name')!.changed, '逐字段 changed 判定')
+  assert.ok(!byKey.get('characters[1].name')!.changed, '未变条目不高亮')
+  assert.ok(byKey.get('characters[2].name')!.changed, '新增条目展开为行')
+  assert.ok(byKey.get('characters[0].tags[1]')!.changed, '嵌套数组逐位展开')
+  assert.ok(byKey.get('characters[0].tags[1]')!.old === '', '新增数组位 old 为空')
+  // 标量对象仍保持顶层行形态（其他 JSON 资产不受影响）
+  const scalar = hooks.flattenRows({ a: 1, b: 'x' }, { a: 2, b: 'x' })
+  assert.equal(scalar.length, 2)
+  assert.ok(scalar[0]!.changed && !scalar[1]!.changed)
 })

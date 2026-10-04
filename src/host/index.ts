@@ -85,7 +85,10 @@ export function apply(ctx: HostContext): () => void {
   const web = ctx.webServer
   // 漫剧工坊网关：workspaceRegistry 软探测（宿主 ≤0.1.4 缺服务时 resolve 返回 workspace-unknown，
   // 工具与 RPC 都拿到稳定错误码，不崩载）。
-  const dramaHost = new DramaHost({ registry: typeof ctx.workspaceRegistry?.get === 'function' ? ctx.workspaceRegistry : null })
+  const dramaHost = new DramaHost({
+    registry: typeof ctx.workspaceRegistry?.get === 'function' ? ctx.workspaceRegistry : null,
+    runs,
+  })
 
   const disposers: Array<() => void> = []
   // Agent 能力通告：软探测 section 可用性（漏声明 inject 宿主会抛 without inject，这里 tolerance 防崩载）。

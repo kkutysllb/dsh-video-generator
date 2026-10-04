@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { DramaHost, type WorkspaceRegistryFace } from '../src/drama/gateway.ts'
 import { handleDramaApi, assembleTaskInstruction } from '../src/host/project-routes.ts'
 import type { ProjectDetail } from '../src/store/project.ts'
+import { RunStore } from '../src/store/runs.ts'
 
 function registryWith(dirs: Record<string, string>): WorkspaceRegistryFace {
   return {
@@ -260,5 +261,57 @@ test('proposal.apply/reject 走 RPC 面；无 registry 时整体降级 workspace
     assert.equal((resolveBare.value as { registryAvailable: boolean }).registryAvailable, false)
   } finally {
     rmSync(wsDir, { recursive: true, force: true })
+  }
+})
+
+/* ── 最近成片 + 面板花费汇总（规格 §2.3/§2.5，2026-10-04 梯队二）────── */
+
+test('drama.project.list 带 latestRun；drama.project.get 的 adaptations 带 runStatus/runSpend', () => {
+  const wsDir = mkdtempSync(join(tmpdir(), 'vgen-drama-latestcut-'))
+  const runsDir = mkdtempSync(join(tmpdir(), 'vgen-drama-latestcut-runs-'))
+  const runs = RunStore.open({ rootDir: runsDir })
+  try {
+    const host = new DramaHost({ registry: registryWith({ ws1: wsDir }), runs })
+    const created = call(host, 'drama.project.create', {
+      workspaceId: 'ws1',
+      project: { title: '成片项目', category: '小说', language: '中文', logline: '成片汇总测试' },
+    })
+    const projectId = (created.value as { projectId: string }).projectId
+    // 章节草稿 → 可改编
+    const saved = call(host, 'drama.asset.update', {
+      workspaceId: 'ws1', projectId, assetRef: 'chapters/0001/draft', baseRevision: 'absent', replacement: '第一章正文',
+    })
+    assert.ok(saved.ok, `草稿保存失败: ${JSON.stringify(saved)}`)
+    const adapted = call(host, 'drama.adaptation.create', {
+      workspaceId: 'ws1', projectId, chapterId: '0001',
+      params: { targetDuration: '90s', aspect: '9:16', fidelity: 'faithful', narrationLanguage: '中文' },
+    })
+    assert.ok(adapted.ok, `改编创建失败: ${JSON.stringify(adapted)}`)
+    const adaptationId = (adapted.value as { adaptationId: string }).adaptationId
+    // 建 run + spend 事件 + 链接到改编
+    const run = runs.create('成片测试')
+    runs.appendEvent(run.id, 'spend', { stage: 'video', estCny: 0.5, jobId: 'j1' })
+    runs.appendEvent(run.id, 'spend', { stage: 'image', estCny: 0.2, jobId: 'j2' })
+    runs.setStatus(run.id, 'done')
+    const ws = host.resolve('ws1')
+    ws.projects.linkRun(projectId, adaptationId, run.id)
+    // list：latestRun 汇总
+    const list = call(host, 'drama.project.list', {})
+    assert.ok(list.ok)
+    const proj = (list.value as { projects: Array<{ id: string; latestRun: { runId: string; status: string } | null }> }).projects.find((p) => p.id === projectId)
+    assert.ok(proj?.latestRun, 'latestRun 存在')
+    assert.equal(proj.latestRun.runId, run.id)
+    assert.equal(proj.latestRun.status, 'done')
+    // get：adaptations 附 runStatus/runSpend
+    const got = call(host, 'drama.project.get', { workspaceId: 'ws1', projectId })
+    assert.ok(got.ok)
+    const adaptations = (got.value as { adaptations: Array<{ adaptationId: string; runStatus?: string; runSpend?: { entries: number; estCny: number } }> }).adaptations
+    const a = adaptations.find((x) => x.adaptationId === adaptationId)
+    assert.ok(a, '改编记录存在')
+    assert.equal(a.runStatus, 'done')
+    assert.deepEqual(a.runSpend, { entries: 2, estCny: 0.7 })
+  } finally {
+    rmSync(wsDir, { recursive: true, force: true })
+    rmSync(runsDir, { recursive: true, force: true })
   }
 })

@@ -9,6 +9,7 @@
 import { join } from 'node:path'
 import { ProjectStore, DramaError } from '../store/project.ts'
 import { ProposalStore } from '../store/proposal.ts'
+import type { RunStore } from '../store/runs.ts'
 
 /** workspace registry 最小面（宿主软探测：缺失时 drama 功能整体降级）。 */
 export interface WorkspaceRegistryFace {
@@ -31,10 +32,17 @@ export interface ResolvedWorkspace {
 
 export class DramaHost {
   private registry: WorkspaceRegistryFace | null
+  private runs: RunStore | null
   private cache = new Map<string, ResolvedWorkspace>()
 
-  constructor(opts: { registry?: WorkspaceRegistryFace | null } = {}) {
+  constructor(opts: { registry?: WorkspaceRegistryFace | null; runs?: RunStore | null } = {}) {
     this.registry = opts.registry ?? null
+    this.runs = opts.runs ?? null
+  }
+
+  /** 视频 RunStore（可选注入：项目概览/Agent 面板的最近成片与花费汇总读它；缺席 → 相关字段降级）。 */
+  runsStore(): RunStore | null {
+    return this.runs
   }
 
   registryAvailable(): boolean {
