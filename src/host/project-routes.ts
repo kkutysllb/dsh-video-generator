@@ -144,6 +144,12 @@ function dispatch(host: DramaHost, name: string, args: Args): unknown {
       return { projectId: manifest.id, title: manifest.title }
     }
 
+    case 'drama.project.delete': {
+      const ws = host.requireProject(args['workspaceId'], args['projectId'])
+      ws.projects.deleteProject(requireString(args['projectId'], 'projectId'))
+      return { deleted: true }
+    }
+
     case 'drama.project.get': {
       const ws = host.requireProject(args['workspaceId'], args['projectId'])
       const projectId = requireString(args['projectId'], 'projectId')

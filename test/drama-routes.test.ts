@@ -251,6 +251,30 @@ test('drama.task.delete：删除后任务消失；重复删 not-found；非法 i
   }
 })
 
+test('drama.project.delete：整项目移除；重复删 not-found；非法 id/未知项目报错', () => {
+  const { host, wsDir } = setup()
+  try {
+    const created = call(host, 'drama.project.create', {
+      workspaceId: 'ws1',
+      project: { title: '待删项目', category: '小说', language: '中文', logline: 'x' },
+    })
+    const pid = (created.value as { projectId: string }).projectId
+    const ws = host.resolve('ws1')
+    ws.projects.createTask(pid, { kind: 'generate-architecture', params: {}, instruction: 'i', inputRefs: [] })
+    const del = call(host, 'drama.project.delete', { workspaceId: 'ws1', projectId: pid })
+    assert.ok(del.ok)
+    assert.equal((del.value as { deleted: boolean }).deleted, true)
+    assert.equal(ws.projects.get(pid), null, '项目整目录移除（含任务）')
+    assert.equal(ws.projects.list().some((p) => p.id === pid), false, '列表不再返回')
+    // 重复删除 → not-found；未知项目 → not-found；非法 id → bad-request
+    assert.equal(call(host, 'drama.project.delete', { workspaceId: 'ws1', projectId: pid }).error!.code, 'not-found')
+    assert.equal(call(host, 'drama.project.delete', { workspaceId: 'ws1', projectId: 'proj-none' }).error!.code, 'not-found')
+    assert.equal(call(host, 'drama.project.delete', { workspaceId: 'ws1', projectId: '../escape' }).error!.code, 'bad-request')
+  } finally {
+    rmSync(wsDir, { recursive: true, force: true })
+  }
+})
+
 test('proposal.apply/reject 走 RPC 面；无 registry 时整体降级 workspace-unknown', () => {
   const { host, projectId, wsDir } = setup()
   try {

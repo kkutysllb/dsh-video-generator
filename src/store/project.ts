@@ -862,6 +862,13 @@ export class ProjectStore {
     return detail
   }
 
+  /** 删除项目（整目录移除：章节/任务/提案/改编/候选一并清除，不可恢复）。运行中的生成不会自动终止。 */
+  deleteProject(projectId: string): void {
+    const dir = this.projectDir(projectId) // id 形状校验 + 防路径注入
+    this.requireProject(projectId)
+    rmSync(dir, { recursive: true, force: true })
+  }
+
   touch(projectId: string): void {
     const manifest = this.readManifest(projectId)
     if (!manifest) return
