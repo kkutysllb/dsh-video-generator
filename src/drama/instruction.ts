@@ -250,6 +250,11 @@ export function assembleInstruction(kind: TaskKind, ctx: InstructionContext): { 
       lines.push(`- 大纲本章行：${outlineRowBrief(ctx.outlineRow)}`)
       lines.push(`- 架构摘要：${briefArchitecture(ctx.architecture)}`)
       inputRefs.push('outline', 'architecture')
+      // 蓝图任务的承接输入（规格 §2.6：需承接的上一章事实自动带出）
+      if (ctx.chapterNumber !== undefined && ctx.chapterNumber > 1) {
+        const prevcid = String(ctx.chapterNumber - 1).padStart(4, '0')
+        inputRefs.push(`chapters/${prevcid}/final`, `chapters/${prevcid}/blueprint`)
+      }
     }
     const ids = ctx.blueprint?.characterIds ?? ctx.outlineRow?.characters ?? null
     lines.push('- 出场角色摘要：')
@@ -258,9 +263,10 @@ export function assembleInstruction(kind: TaskKind, ctx: InstructionContext): { 
     lines.push('- 相关世界观条目：')
     lines.push(worldBrief(ctx.worldEntries))
     inputRefs.push('worldbuilding')
-    if (kind !== 'generate-chapter-blueprint') {
-      lines.push(`- 上一章定稿末段：${ctx.prevFinalExcerpt?.trim() ? `\n${ctx.prevFinalExcerpt}` : '（无——本章为第一章或上一章未定稿）'}`)
-      lines.push(`- 定稿连续性事实（上一章新增）：${(ctx.continuityFacts ?? []).join('；') || '（无）'}`)
+    lines.push(`- 上一章定稿末段：${ctx.prevFinalExcerpt?.trim() ? `\n${ctx.prevFinalExcerpt}` : '（无——本章为第一章或上一章未定稿）'}`)
+    lines.push(`- 定稿连续性事实（上一章新增）：${(ctx.continuityFacts ?? []).join('；') || '（无）'}`)
+    if (kind === 'generate-chapter-blueprint') {
+      lines.push('- 蓝图的「需承接的上一章事实」逐条取自上述连续性事实（无则为空数组），不得虚构')
     }
     if (kind === 'review-chapter' || kind === 'revise-chapter') {
       lines.push('--- 当前草稿 ---')
@@ -297,7 +303,7 @@ function defaultRequirement(kind: TaskKind): string {
     case 'generate-outline':
       return '生成全书章节大纲（每章：标题/目标/主要事件/出场角色/场景/情绪/线索推进/结尾钩子）'
     case 'generate-chapter-blueprint':
-      return '把大纲本章行细化为本章写作蓝图'
+      return '把大纲本章行细化为本章写作蓝图；「需承接的上一章事实」逐条取自所给连续性事实（无则留空）'
     case 'generate-chapter-draft':
       return '按蓝图写出本章正文，目标字数参照项目设定；只写本章，不越章剧透'
     case 'review-chapter':

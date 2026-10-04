@@ -315,3 +315,32 @@ test('drama.project.list 带 latestRun；drama.project.get 的 adaptations 带 r
     rmSync(runsDir, { recursive: true, force: true })
   }
 })
+
+/* ── ⑧ 蓝图承接（规格 §2.6「需承接的上一章事实自动带出」，2026-10-04）── */
+
+test('指令组装：蓝图任务携带上一章定稿末段与连续性事实（承接 grounding）', () => {
+  const { host, projectId, wsDir } = setup()
+  try {
+    const ws = host.resolve('ws1')
+    ws.projects.writeAsset(projectId, 'characters', 'absent', { characters: [] })
+    ws.projects.writeAsset(projectId, 'chapters/0001/final', 'absent', '第一章定稿开头。'.repeat(50) + '末段：第一次挥手完成，包裹发出。')
+    ws.projects.writeAsset(projectId, 'chapters/0001/blueprint', 'absent', {
+      goal: '第一次握手', conflict: '无人接件', scenes: '门口', characterIds: ['alice'], keyEvents: [], factsFromPrev: [], newFacts: ['首次握手完成'], endingHook: '等回执',
+    })
+    const detail = ws.projects.get(projectId) as ProjectDetail
+    const { instruction, inputRefs } = assembleTaskInstruction(
+      ws, projectId, 'generate-chapter-blueprint', { chapter: 2 }, undefined, detail,
+    )
+    assert.match(instruction, /任务类型：generate-chapter-blueprint/)
+    assert.match(instruction, /末段：第一次挥手完成/, '上一章定稿末段入指令')
+    assert.match(instruction, /首次握手完成/, '连续性事实（上一章新增）入指令')
+    assert.match(instruction, /需承接的上一章事实」逐条取自上述连续性事实/, '承接字段 grounding 指引')
+    assert.ok(inputRefs.includes('chapters/0001/final'), 'inputRefs 带上一章 final')
+    assert.ok(inputRefs.includes('chapters/0001/blueprint'), 'inputRefs 带上一章 blueprint')
+    // 第一章（无上一章）：末段占位不虚构
+    const first = assembleTaskInstruction(ws, projectId, 'generate-chapter-blueprint', { chapter: 1 }, undefined, ws.projects.get(projectId) as ProjectDetail)
+    assert.match(first.instruction, /（无——本章为第一章或上一章未定稿）/)
+  } finally {
+    rmSync(wsDir, { recursive: true, force: true })
+  }
+})

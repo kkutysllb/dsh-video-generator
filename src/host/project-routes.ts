@@ -401,8 +401,9 @@ export function assembleTaskInstruction(
     } else {
       ctx.characters = characterSummaries(chars, null, false)
     }
-    // 上一章相邻定稿（验收 10：连续性上下文只携带相邻一章的末段与新增事实）
-    if (kind === 'generate-chapter-draft' && chapterNumber > 1) {
+    // 上一章相邻定稿（验收 10：连续性上下文只携带相邻一章的末段与新增事实）；
+    // 蓝图任务同样携带（规格 §2.6 蓝图「需承接的上一章事实自动带出」的 grounding）
+    if ((kind === 'generate-chapter-draft' || kind === 'generate-chapter-blueprint') && chapterNumber > 1) {
       const prevCid = chapterDirId(chapterNumber - 1)
       if (prevCid) {
         const prevFinal = readAssetOrNull(ws.projects, projectId, `chapters/${prevCid}/final`)
