@@ -200,7 +200,7 @@ test('bundle：漫剧工坊契约——PANEL_ID、drama RPC 面、提案闭环�
   for (const method of [
     'drama.workspace.resolve', 'drama.project.list', 'drama.project.create', 'drama.project.get',
     'drama.asset.get', 'drama.asset.update', 'drama.proposal.apply', 'drama.proposal.reject',
-    'drama.task.create', 'drama.task.update', 'drama.adaptation.create',
+    'drama.task.create', 'drama.task.update', 'drama.task.delete', 'drama.adaptation.create',
     'drama.candidate.save',
   ]) {
     assert.ok(code.includes(`"${method}"`), `缺 RPC 方法 ${method}`)
@@ -223,9 +223,12 @@ test('bundle：漫剧工坊双语词典键齐备（zh/en 同步）', () => {
     'stageOverview', 'stagePremise', 'stageArch', 'stageWorld', 'stageChars', 'stageOutline', 'stageChapter', 'stageAdapt', 'stageRuns',
     'agentPanel', 'pendingProposals', 'statusWriting', 'statusPendingReview', 'statusAdapting', 'statusDone',
     'subBlueprint', 'subDraft', 'subReview', 'subFinal', 'finalize', 'adaptCreate', 'instructCopied', 'registryMissing', 'channelWarn',
+    'taskDelete', 'taskDeleteConfirm', 'taskDeleted',
   ]) {
     assert.ok(code.includes(`${key}: "`), `缺词典键 ${key}`)
   }
+  // 任务删除入口（清障：卡住的任务可删除后重新发起）
+  assert.ok(code.includes('onDeleteTask'), '缺 AgentPanel 删除任务接线')
   // 指令预填走宿主 uiConversation.fillDraft（SessionId 显式寻址的官方 API），
   // 且必须保留剪贴板兜底路径（fillDraft 对未挂载输入壳的会话是 no-op）
   assert.ok(code.includes('.fillDraft(sessionId, text)'), 'sendInstruction 未使用 uiConversation.fillDraft')

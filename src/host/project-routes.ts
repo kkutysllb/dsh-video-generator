@@ -274,6 +274,12 @@ function dispatch(host: DramaHost, name: string, args: Args): unknown {
       return { task }
     }
 
+    case 'drama.task.delete': {
+      const ws = host.requireProject(args['workspaceId'], args['projectId'])
+      ws.projects.deleteTask(requireString(args['projectId'], 'projectId'), requireString(args['taskId'], 'taskId'))
+      return { deleted: true }
+    }
+
     case 'drama.adaptation.create': {
       const ws = host.requireProject(args['workspaceId'], args['projectId'])
       const projectId = requireString(args['projectId'], 'projectId')

@@ -6,7 +6,7 @@
  * - 写入一律 tmp + rename 原子替换；目录 0700、文件 0600；损坏文件备份 `<name>.broken-<ts>` 后按缺失处理。
  */
 
-import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 
@@ -988,6 +988,14 @@ export class ProjectStore {
     this.writeFileAtomic(join(this.projectDir(projectId), 'tasks', `${task.taskId}.json`), JSON.stringify(task, null, 2) + '\n')
     this.touch(projectId)
     return task
+  }
+
+  /** 删除任务（页面清障入口：卡在 pending/running 的任务可移除后重新发起）。不可恢复；关联 run 不受影响。 */
+  deleteTask(projectId: string, taskId: string): void {
+    if (!TASK_ID_RE.test(taskId)) throw new DramaError('bad-request', `非法任务 id: ${taskId}`)
+    this.requireTask(projectId, taskId)
+    rmSync(join(this.projectDir(projectId), 'tasks', `${taskId}.json`), { force: true })
+    this.touch(projectId)
   }
 
   /* ── 漫剧改编 ── */

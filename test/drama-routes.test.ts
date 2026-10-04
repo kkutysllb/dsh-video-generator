@@ -229,6 +229,28 @@ test('drama.task.create 落任务并返回 Host 组装指令；task.update 回�
   }
 })
 
+test('drama.task.delete：删除后任务消失；重复删 not-found；非法 id bad-request', () => {
+  const { host, projectId, wsDir } = setup()
+  try {
+    const ws = host.resolve('ws1')
+    const task = ws.projects.createTask(projectId, { kind: 'generate-architecture', params: {}, instruction: 'i', inputRefs: [] })
+    const del = call(host, 'drama.task.delete', { workspaceId: 'ws1', projectId, taskId: task.taskId })
+    assert.ok(del.ok)
+    assert.equal((del.value as { deleted: boolean }).deleted, true)
+    assert.equal(ws.projects.getTask(projectId, task.taskId), null)
+    // 重复删除 → not-found
+    const again = call(host, 'drama.task.delete', { workspaceId: 'ws1', projectId, taskId: task.taskId })
+    assert.equal(again.ok, false)
+    assert.equal(again.error!.code, 'not-found')
+    // 非法 id → bad-request（路径穿越形态同样被 id 规则挡下）
+    const bad = call(host, 'drama.task.delete', { workspaceId: 'ws1', projectId, taskId: '../escape' })
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error!.code, 'bad-request')
+  } finally {
+    rmSync(wsDir, { recursive: true, force: true })
+  }
+})
+
 test('proposal.apply/reject 走 RPC 面；无 registry 时整体降级 workspace-unknown', () => {
   const { host, projectId, wsDir } = setup()
   try {
