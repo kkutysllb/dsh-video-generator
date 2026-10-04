@@ -27,6 +27,8 @@ export interface ShotClipOptions {
   outFile: string
   pollDelayMs?: number
   maxPollMs?: number
+  /** 取消信号：中止轮询立即抛 PollAbortedError（调用方转中断语义）。 */
+  signal?: AbortSignal
   /** submit 成功即回调（调用方在此落 spend 事件，保持与原 machine 相同的事件顺序）。 */
   onSubmit?: (jobId: string) => void
 }
@@ -39,7 +41,7 @@ export async function generateShotClip(o: ShotClipOptions): Promise<string> {
   o.onSubmit?.(String(jobId))
   const finalState = await pollUntil(
     () => o.provider.status(String(jobId)),
-    { isFinal: (s) => s.state === 'done' || s.state === 'failed', delayMs: o.pollDelayMs ?? 1000, maxPollMs: o.maxPollMs ?? 600000 },
+    { isFinal: (s) => s.state === 'done' || s.state === 'failed', delayMs: o.pollDelayMs ?? 1000, maxPollMs: o.maxPollMs ?? 600000, signal: o.signal },
   )
   if (finalState.state === 'failed') throw new Error(`视频生成失败: ${finalState.error ?? '?'}`)
   const f = await o.provider.fetch(String(jobId))

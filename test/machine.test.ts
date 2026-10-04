@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { advanceRun } from '../src/pipeline/machine.ts'
+import { advanceRun, RunInterruptedError } from '../src/pipeline/machine.ts'
 import { ModelUnavailableError } from '../src/model-selection.ts'
 import { HandoffError } from '../src/schema/handoff.ts'
 import { RelayError } from '../src/providers/relay-http.ts'
@@ -619,6 +619,121 @@ test('spend 事件含 channel 字段（规格 §4.4 记账四元组）', async (
     const spend = s.runs.get(s.run.id)!.events.find((e) => e.type === 'spend')
     assert.ok(spend, 'spend 事件存在')
     assert.equal(spend!.detail?.['channel'], 've', 'run 内 spend 事件带通道 id')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+/* ── 取消感知与 music 断点续跑（规格 §5.1 / §13）────────── */
+
+test('abort 感知：宿主停用立即中断在飞轮询（RunInterruptedError + run-interrupted 事件）', async () => {
+  const s = setup()
+  try {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 120)
+    const neverDone = {
+      id: 'fake-never', capabilities: { imageToVideo: true, qualityTier: 5 },
+      quote: async () => ({ qualityTier: 5, costEstimate: 0.013, currency: 'CNY' }),
+      submit: async () => ({ jobId: 'task-x' }),
+      status: async () => ({ state: 'running' as const, progress: 10 }),
+      fetch: async () => ({ outputs: [] }),
+      health: async () => ({ ok: true }),
+    }
+    await assert.rejects(
+      advanceRun({
+        ...BASE, runs: s.runs, runId: s.run.id, target: 'video',
+        providers: { forSlot: (b: SlotBinding) => (b.slot === 'video' ? neverDone : fakeImageProvider(`https://img.example/${b.slot}.png`)) },
+        confirmer: async () => true, ffmpeg: null, pollDelayMs: 5000, signal: controller.signal,
+      }),
+      RunInterruptedError,
+    )
+    const rec = s.runs.get(s.run.id)!
+    assert.equal(rec.status, 'failed')
+    assert.ok(rec.events.some((e) => e.type === 'run-interrupted'), 'run-interrupted 事件留痕')
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('music 断点续跑：中止后重推续查同一 jobId，不重复提交计费（规格 §5.1）', async () => {
+  const s = setup()
+  try {
+    s.runs.setMode(s.run.id, 'mv')
+    writeFileSync(join(s.rd, 'lyrics.json'), JSON.stringify({ lyrics: '[Verse]\n第一句\n[Chorus]\n副歌' }))
+    let submits = 0
+    let done = false
+    const musicProvider = {
+      id: 'fake-song', capabilities: { tts: true, qualityTier: 5 },
+      quote: async () => ({ qualityTier: 5, costEstimate: 0.9, currency: 'CNY' }),
+      submit: async () => { submits++; return { jobId: `song-${submits}` } },
+      status: async () => (done ? { state: 'done' as const, progress: 100 } : { state: 'running' as const, progress: 10 }),
+      fetch: async () => ({ outputs: ['https://oss.example/song.mp3'] }),
+      health: async () => ({ ok: true }),
+    }
+    const forSlot = (b: SlotBinding) => (b.slot === 'music.song' ? musicProvider : fakeImageProvider(`https://img.example/${b.slot}.png`))
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 120)
+    await assert.rejects(
+      advanceRun({
+        ...BASE, slots: slots({ 'music.song': slot('music.song', 'song-model') }),
+        runs: s.runs, runId: s.run.id, target: 'music', providers: { forSlot },
+        confirmer: async () => true, ffmpeg: null, pollDelayMs: 5000, signal: controller.signal,
+      }),
+      RunInterruptedError,
+    )
+    assert.equal(submits, 1)
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-job'), 'music-job 事件留痕')
+    // 重推：上游任务已完成 → 续查同一 jobId，不再提交
+    done = true
+    const r = await advanceRun({
+      ...BASE, slots: slots({ 'music.song': slot('music.song', 'song-model') }),
+      runs: s.runs, runId: s.run.id, target: 'music', providers: { forSlot },
+      confirmer: async () => true, ffmpeg: null, pollDelayMs: 1,
+    })
+    assert.equal(submits, 1, '续跑不重复提交（不重复计费）')
+    assert.equal(r.stages['music'], 'done')
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-resume'), 'music-resume 事件留痕')
+    assert.ok(existsSync(join(s.rd, 'music', 'song.mp3')))
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true })
+  }
+})
+
+test('music 上游判死（failed 终态）后重推重新提交，不续查死任务', async () => {
+  const s = setup()
+  try {
+    s.runs.setMode(s.run.id, 'mv')
+    writeFileSync(join(s.rd, 'lyrics.json'), JSON.stringify({ lyrics: '[Verse]\n第一句\n[Chorus]\n副歌' }))
+    let submits = 0
+    let fail = true
+    const musicProvider = {
+      id: 'fake-song', capabilities: { tts: true, qualityTier: 5 },
+      quote: async () => ({ qualityTier: 5, costEstimate: 0.9, currency: 'CNY' }),
+      submit: async () => { submits++; return { jobId: `song-${submits}` } },
+      status: async () => (fail ? { state: 'failed' as const, progress: 0, error: '内容审核未通过' } : { state: 'done' as const, progress: 100 }),
+      fetch: async () => ({ outputs: ['https://oss.example/song.mp3'] }),
+      health: async () => ({ ok: true }),
+    }
+    const forSlot = (b: SlotBinding) => (b.slot === 'music.song' ? musicProvider : fakeImageProvider(`https://img.example/${b.slot}.png`))
+    await assert.rejects(
+      advanceRun({
+        ...BASE, slots: slots({ 'music.song': slot('music.song', 'song-model') }),
+        runs: s.runs, runId: s.run.id, target: 'music', providers: { forSlot },
+        confirmer: async () => true, ffmpeg: null, pollDelayMs: 1,
+      }),
+      /音乐生成失败/,
+    )
+    assert.equal(submits, 1)
+    assert.ok(s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-job-dead'), 'music-job-dead 事件留痕')
+    fail = false
+    const r = await advanceRun({
+      ...BASE, slots: slots({ 'music.song': slot('music.song', 'song-model') }),
+      runs: s.runs, runId: s.run.id, target: 'music', providers: { forSlot },
+      confirmer: async () => true, ffmpeg: null, pollDelayMs: 1,
+    })
+    assert.equal(submits, 2, '死任务不续查，重新提交新任务')
+    assert.equal(r.stages['music'], 'done')
+    assert.ok(!s.runs.get(s.run.id)!.events.some((e) => e.type === 'music-resume'), '无 music-resume')
   } finally {
     rmSync(s.dir, { recursive: true, force: true })
   }

@@ -13,7 +13,7 @@ import type { Provider } from '../provider.ts'
 import { capabilityFlag, type SlotBinding, type SlotId } from '../store/slots.ts'
 import { buildCharacterSheetPrompt, buildScenePrompt, buildShotPrompt } from '../prompts.ts'
 import { STAGES, type StageId } from '../stages.ts'
-import { pollUntil, retryTransient } from '../poll.ts'
+import { pollUntil, retryTransient, PollAbortedError } from '../poll.ts'
 import { RelayError } from '../providers/relay-http.ts'
 import { bindingUnavailable, isExplicitModelUnavailable, ModelUnavailableError, requireSlotBinding } from '../model-selection.ts'
 import { HandoffError } from '../schema/handoff.ts'
@@ -406,12 +406,15 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
               durationSec,
               outFile: file,
               pollDelayMs: deps.pollDelayMs,
+              signal: deps.signal,
               onSubmit: (jobId) => {
                 runs.appendEvent(runId, 'spend', { stage: st, model: videoBinding.model, estCny: est, shot: shot.index, channel: channel.id, jobId: jobId.slice(0, 80) })
                 deps.recordSpend?.({ channel: channel.id, model: videoBinding.model, kind: 'video', estCny: est, jobId: jobId.slice(0, 80) })
               },
             })
           } catch (err) {
+            // abort 不是 shot 失败：原样上抛给段级 catch 转中断语义（保留 run-interrupted 标记路径）
+            if (err instanceof PollAbortedError) throw err
             if (isExplicitModelUnavailable(err) || err instanceof ModelUnavailableError) {
               throw wrapBindingError(videoBinding, err)
             }
@@ -425,6 +428,8 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
         runs.appendEvent(runId, 'clips', { files: clipFiles, mode: useI2v ? 'i2v' : 't2v' })
         done(st)
       } catch (err) {
+        // 轮询被中止：走宿主停用标记路径（running 段置 failed + run-interrupted 事件），不算 shot 失败
+        if (err instanceof PollAbortedError) ensureLive()
         runs.setStage(runId, st, 'failed')
         throw err
       }
@@ -467,21 +472,42 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           if (isMv && !lyricsText) {
             throw new HandoffError('bad-request', 'MV 主曲需要歌词：先用 vgen_script 携带 lyrics 字段提交歌词（[Intro]/[Verse]/[Chorus]… 段落标签体系），再推进 music 段')
           }
-          const est = deps.estimate(musicBinding)
-          if (!(await deps.confirmer(est, 'music'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
-          const prompt = isMv
-            ? `Comic-drama MV song, ${script.style || 'cinematic'}, catchy melody, clear structure, vocals`
-            : `Instrumental background music, ${script.style || 'cinematic'}, calm and unobtrusive, seamless loop, no vocals`
-          const spec: Record<string, unknown> = { prompt, instrumental: !isMv, durationSec }
-          if (isMv) spec['lyrics'] = lyricsText
-          const { jobId } = await retryTransient(() => provider.submit(st, spec))
-          runs.appendEvent(runId, 'spend', { stage: st, model: musicBinding.model, estCny: est, channel: channel.id, jobId: String(jobId).slice(0, 80) })
-          deps.recordSpend?.({ channel: channel.id, model: musicBinding.model, kind: 'music', estCny: est, jobId: String(jobId).slice(0, 80) })
+          // 断点续跑（规格 §5.1「已完成段不重花钱」）：上次 submit 已留痕（music-job）且未判死
+          // （music-job-dead）→ 续轮询同一任务，不重复提交、不重复计费。判死仅指上游任务终态
+          // failed；轮询超时/取消中止时任务在上游仍存活，重推应续查而非重花钱。
+          const events = runs.get(runId)!.events
+          const idxLast = (type: string): number => {
+            for (let i = events.length - 1; i >= 0; i--) if (events[i]!.type === type) return i
+            return -1
+          }
+          const jobIdx = idxLast('music-job')
+          const resumeJobId = jobIdx > idxLast('music-job-dead') ? String(events[jobIdx]!.detail?.['jobId'] ?? '') : ''
+          let jobId: string
+          if (resumeJobId) {
+            jobId = resumeJobId
+            runs.appendEvent(runId, 'music-resume', { jobId: jobId.slice(0, 80) })
+          } else {
+            const est = deps.estimate(musicBinding)
+            if (!(await deps.confirmer(est, 'music'))) throw new Error(`用户取消（${st} 段，预测 ${est ?? 'unknown'}）`)
+            const prompt = isMv
+              ? `Comic-drama MV song, ${script.style || 'cinematic'}, catchy melody, clear structure, vocals`
+              : `Instrumental background music, ${script.style || 'cinematic'}, calm and unobtrusive, seamless loop, no vocals`
+            const spec: Record<string, unknown> = { prompt, instrumental: !isMv, durationSec }
+            if (isMv) spec['lyrics'] = lyricsText
+            jobId = String((await retryTransient(() => provider.submit(st, spec))).jobId)
+            runs.appendEvent(runId, 'spend', { stage: st, model: musicBinding.model, estCny: est, channel: channel.id, jobId: String(jobId).slice(0, 80) })
+            deps.recordSpend?.({ channel: channel.id, model: musicBinding.model, kind: 'music', estCny: est, jobId: String(jobId).slice(0, 80) })
+            runs.appendEvent(runId, 'music-job', { jobId: String(jobId).slice(0, 80) })
+          }
+          // 轮询上限 480s（工具窗口 600s 内给 submit/下载/分析留头寸）；超时/中止时 jobId 已留痕，重推续查不重复计费
           const finalState = await pollUntil(
-            () => provider.status(String(jobId)),
-            { isFinal: (s) => s.state === 'done' || s.state === 'failed', delayMs: deps.pollDelayMs ?? 1000, maxPollMs: 600000 },
+            () => provider.status(jobId),
+            { isFinal: (s) => s.state === 'done' || s.state === 'failed', delayMs: deps.pollDelayMs ?? 1000, maxPollMs: 480000, signal: deps.signal },
           )
-          if (finalState.state === 'failed') throw new Error(`音乐生成失败: ${finalState.error ?? '?'}`)
+          if (finalState.state === 'failed') {
+            runs.appendEvent(runId, 'music-job-dead', { jobId: String(jobId).slice(0, 80) })
+            throw new Error(`音乐生成失败: ${finalState.error ?? '?'}`)
+          }
           const f = await provider.fetch(String(jobId))
           const headers = (f.meta as { headers?: Record<string, string> } | undefined)?.headers
           const audioB64 = (f.meta as { audioBase64?: string } | undefined)?.audioBase64
@@ -528,6 +554,8 @@ export async function advanceRun(deps: MachineDeps): Promise<AdvanceResult> {
           runs.appendEvent(runId, 'music-done', { file: `music/${baseName}.mp3`, durationSec: durSec, requestedSec: durationSec, kind: isMv ? 'song' : 'bgm' })
           done(st)
         } catch (err) {
+          // 轮询被中止：走宿主停用标记路径，不算音乐失败（jobId 已留痕，重推续查）
+          if (err instanceof PollAbortedError) ensureLive()
           runs.setStage(runId, st, 'failed')
           const msg = err instanceof Error ? err.message : String(err)
           runs.appendEvent(runId, 'music-failed', { error: msg.slice(0, 300) })
