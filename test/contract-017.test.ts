@@ -17,8 +17,9 @@ const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.jso
   peerDependenciesMeta?: Record<string, { optional?: boolean }>
 }
 
-/** 兼容门范围（与 super-ppts 1.4.3 同口径；右支为 QiLin 3.x 运行时号预留）。 */
-const PEER_RANGE = '>=0.1.0-rc.5 <0.2.0 || >=3.0.0 <4.0.0'
+/** 兼容门范围（右支为 QiLin 3.x 运行时号预留；左支上界 1.0.0 覆盖 0.2.x 全系，
+ *  旧上界 <0.2.0 对 0.2.1-alpha.1 求值为 false → app-boot 静默跳过整个 bundle）。 */
+const PEER_RANGE = '>=0.1.0-rc.5 <1.0.0 || >=3.0.0 <4.0.0'
 
 test('manifest：死包清零 + 两通道 inject 清单一致（dsh / qilin）', () => {
   const dshInject = pkg.dsh?.client?.inject ?? []
@@ -46,7 +47,7 @@ test('manifest：peer 兼容门声明——集合 = @deepseek-ai/dsh ∪ client.
 
 test('peer 范围语义：0.1.x 预发布走左支、QiLin 3.x 走右支（宿主 includePrerelease 口径）', () => {
   const clauses = PEER_RANGE.split('||').map((c) => c.trim())
-  assert.deepEqual(clauses, ['>=0.1.0-rc.5 <0.2.0', '>=3.0.0 <4.0.0'])
+  assert.deepEqual(clauses, ['>=0.1.0-rc.5 <1.0.0', '>=3.0.0 <4.0.0'])
   for (const clause of clauses) {
     const parts = clause.split(' ')
     assert.equal(parts.length, 2, '每支须为「下界 + 上界」双比较器')

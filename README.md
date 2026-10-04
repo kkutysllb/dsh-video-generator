@@ -70,7 +70,9 @@ QiLin（dsh 0.1.6-alpha.2 合并后）的插件管理器只认原生键
 
 manifest 同步收口：两通道 `client.inject` 移除 0.1.7 已删包
 `@deepseek-ai/dsh-client-runtime`，并按消费面声明 6 个引擎包 + `peerDependencies`
-兼容门（范围 `>=0.1.0-rc.5 <0.2.0 || >=3.0.0 <4.0.0`，含 QiLin 3.x 运行时号；
+兼容门（范围 `>=0.1.0-rc.5 <1.0.0 || >=3.0.0 <4.0.0`，含 QiLin 3.x 运行时号；
+左支上界自 v2.1.3 起为 `<1.0.0`——原 `<0.2.0` 对 `0.2.1-alpha.1` 求值为 false，
+会让兼容门静默禁用整个插件；右支原样保留；
 **全部 optional**——防止 pnpm 把引擎树拉进用户 profile，兼容门只读 peer 范围不受影响）。
 DSH 0.1.7-rc.1 起插件管理器按该范围强校验（安装期 + 启动期，
 `dsh plugin allow-version` 可精确豁免）。明细见
