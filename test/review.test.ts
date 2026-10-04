@@ -42,6 +42,8 @@ function fakeCtx(runs: RunStore, providerCalls: string[] = [], modelCalls: strin
     runs,
     slots: () => slots,
     channelOf: (channelId: string) => (channelId === 'c' ? { id: 'c', label: '评审通道', baseUrl: 'https://mock.invalid', apiKey: 'k' } : null),
+    // 记账隔离：不注入 env 时 SpendLedger 回落 process.env → 写真实 ~/.dsh-video-generator/spend.jsonl
+    env: { DSH_HOME: vaultDir } as unknown as NodeJS.ProcessEnv,
     providersOverride: { forSlot: (binding: { model: string }) => { modelCalls.push(binding.model); return fakeProvider } },
     fetchImpl: (async (_u: string) => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer })) as unknown as typeof fetch,
     extract: async (_c: string, outDir: string) => {
