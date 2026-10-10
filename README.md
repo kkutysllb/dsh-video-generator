@@ -77,6 +77,24 @@ manifest 同步收口：两通道 `client.inject` 移除 0.1.7 已删包
 DSH 0.1.7-rc.1 起插件管理器按该范围强校验（安装期 + 启动期，
 `dsh plugin allow-version` 可精确豁免）。明细见
 [`release/v2.0.2.md`](release/v2.0.2.md) 与 [`plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md`](plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md)。
+### DSH 0.2.1-alpha.2 复核（v2.1.4 起）
+
+上游 alpha.1 → alpha.2（669 提交 / 3226 文件）对本插件**零代码影响**：全仓无 `@deepseek-ai/*`
+导入，宿主契约全部走运行时 duck-typing。逐面核对确认 `webServer.register` / `tools.register` /
+`systemPrompt.section` / `workspaceRegistry.get|list` / 槽位 `settings.section`·`sidebar.panellist`·`main` /
+`ctx.sessions`（retain·using·binding·scope）/ `layout.selectPanel` / `locale.register|bind` /
+`--dsw-alias-*` 令牌**均为不变量或纯增量**，槽目录只增不删；本地 fork 的 KCoder 偏离面（62 文件）
+同样无影响——`ui-slots` 的 `rendersExistingChildren` 是 opt-in，`ui-conversation` 新增的 `fillDraft`
+在上游缺失但插件有 `conversation.input.for(actx).setDraft` 回退，`workspace` 的执行世界化改造不动
+`get/list` 形状。
+
+**唯一需要动作的是交付渠道**：v2.1.3 的兼容门修复当时未发布到 npm，registry 上的 2.1.2 在
+`0.2.1-alpha.*` 上会被 app-boot 整包静默禁用；另有「仍装 2.0.1 的旧环境」——无 peer 声明故被放行，
+但客户端停留在 0.1.6 世代（`sessions.open` / `list.current` 自 0.1.7 起已删，表现为每次发送指令
+都新建会话且不跳转）。v2.1.4 把该修复真正交付，并新增 `test/contract-020.test.ts` 6 条契约哨兵
+（`semver` 实算的兼容门数值语义、会话桥 v4 主路径防退化、已删面 `typeof` 守卫、prompt 双花括号
+插值风险等）。复核报告见
+[`plans/2026-10-10-dsh-0.2.1-alpha.2-upgrade.md`](plans/2026-10-10-dsh-0.2.1-alpha.2-upgrade.md)。
 
 ## 麒麟（QiLin）引擎安装
 
